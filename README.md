@@ -28,9 +28,8 @@ This application receives UDP packets from your ExpressLRS (ELRS) TX module and 
 
 1. **Download** the latest release from the [Releases page](../../releases)
 2. **Install vJoy** from [vjoystick.sourceforge.net](http://vjoystick.sourceforge.net/)
-3. **Configure vJoy** with at least 8 axes (X, Y, Z, RX, RY, RZ, Slider0, Slider1)
-4. **Extract** the ZIP file and run `ELRSWifiJoystick.exe`
-5. **Connect** your ELRS TX module to WiFi
+3. **Extract** the ZIP file and run `ELRSWifiJoystick.exe`
+4. **Connect** your ELRS TX module to WiFi
 
 > **Note**: The release package includes everything needed - no .NET installation required!
 
@@ -84,10 +83,6 @@ This application receives UDP packets from your ExpressLRS (ELRS) TX module and 
 ### vJoy Setup
 
 1. Install vJoy from [vjoystick.sourceforge.net](http://vjoystick.sourceforge.net/)
-2. Run "Configure vJoy" from the Start menu
-3. Configure device #1 with at least 8 axes:
-   - X, Y, Z, RX, RY, RZ, Slider0, Slider1
-4. Enable the device
 
 ### ExpressLRS TX Module Setup
 
