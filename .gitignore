@@ -94,6 +94,9 @@ $RECYCLE.BIN/
 *.so
 *.dylib
 
+# Firmware blobs (e.g. TBS WiFi module .bin files kept locally for reference)
+*.bin
+
 # Backup files
 *.bak
 *~

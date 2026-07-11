@@ -14,11 +14,11 @@ echo - vJoyInterfaceWrap.dll (wrapper)
 echo - All .NET runtime files (no installation needed)
 echo.
 echo Creating distribution ZIP...
-powershell -Command "Compress-Archive -Path 'bin\Release\net6.0\win-x64\publish\*' -DestinationPath 'ELRSWifiJoystick_v1.0.zip' -Force"
+powershell -Command "Compress-Archive -Path 'bin\Release\net6.0\win-x64\publish\*' -DestinationPath 'ELRSWifiJoystick_v1.1.zip' -Force"
 
 echo.
 echo Distribution package created:
-echo - ELRSWifiJoystick_v1.0.zip (~11MB compressed)
+echo - ELRSWifiJoystick_v1.1.zip (~11MB compressed)
 echo - Contains everything needed (no .NET installation required)
 echo - Users only need to install vJoy driver from vjoystick.sourceforge.net
 echo.

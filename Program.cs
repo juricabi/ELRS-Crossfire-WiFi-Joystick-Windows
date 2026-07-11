@@ -22,20 +22,61 @@ namespace ELRSWifiJoystick
         // ExpressLRS WiFi Joystick protocol constants
         private const int JOYSTICK_PORT = 11000;
         private static int LISTEN_PORT = JOYSTICK_PORT;
+
+        // Discovery beacons broadcast on the joystick port. ExpressLRS TX modules
+        // announce themselves with "ELRS"; TBS Crossfire/Tracer WiFi modules announce
+        // with "VELOCIDRONE". Both are activated by the same POST /udpcontrol request
+        // and then stream the identical [type][count][16-bit channels] frames.
+        private static readonly byte[] ELRS_BEACON = Encoding.ASCII.GetBytes("ELRS");
+        private static readonly byte[] CROSSFIRE_BEACON = Encoding.ASCII.GetBytes("VELOCIDRONE");
+
+        // Optional module IP to activate proactively on startup (e.g. a Crossfire module
+        // whose ~8s beacon interval you don't want to wait for). Set via --tx <ip>.
+        private static string? activationIP;
+
+        // Throttle repeated activation POSTs so the low-RAM module isn't hammered.
+        private static readonly Dictionary<string, DateTime> lastActivation = new();
+
+        // Single-source lock: only one module drives the virtual joystick at a time. ELRS
+        // and Crossfire both broadcast their channel frames on this port, so without this a
+        // second radio on the same network would fight the first and jitter the axes. The
+        // lock binds to the first module streaming real data and releases if it goes quiet.
+        private static string? boundSource;
+        private static DateTime boundSourceLastData;
+        private const double SOURCE_TIMEOUT_SEC = 3.0;
+        private static readonly HashSet<string> warnedSources = new();
         
         static void Main(string[] args)
         {
-            Console.WriteLine("ExpressLRS WiFi Joystick for Windows");
-            Console.WriteLine("====================================");
-            
-            
-            // Parse command line arguments for port
-            if (args.Length > 0 && int.TryParse(args[0], out int port))
+            Console.WriteLine("ExpressLRS / TBS Crossfire WiFi Joystick for Windows");
+            Console.WriteLine("====================================================");
+
+
+            // Parse command line arguments: [port] [--tx <module-ip>]
+            for (int i = 0; i < args.Length; i++)
             {
-                LISTEN_PORT = port;
-                Console.WriteLine($"Using custom port: {LISTEN_PORT}");
+                string a = args[i];
+                if ((a == "--tx" || a == "--crossfire" || a == "--activate") && i + 1 < args.Length)
+                {
+                    activationIP = args[++i];
+                    Console.WriteLine($"Will activate module at {activationIP} on startup");
+                }
+                else if (a == "--help" || a == "-h" || a == "/?")
+                {
+                    Console.WriteLine("Usage: ELRSWifiJoystick.exe [port] [--tx <module-ip>]");
+                    Console.WriteLine("  port           UDP listen port (default 11000)");
+                    Console.WriteLine("  --tx <ip>      Activate this module immediately instead of");
+                    Console.WriteLine("                 waiting for its discovery beacon (handy for");
+                    Console.WriteLine("                 TBS Crossfire, e.g. --tx 192.168.2.138)");
+                    return;
+                }
+                else if (int.TryParse(a, out int port))
+                {
+                    LISTEN_PORT = port;
+                    Console.WriteLine($"Using custom port: {LISTEN_PORT}");
+                }
             }
-            else
+            if (LISTEN_PORT == JOYSTICK_PORT)
             {
                 Console.WriteLine($"Using default port: {LISTEN_PORT}");
             }
@@ -98,8 +139,8 @@ namespace ELRSWifiJoystick
             joystick.ResetVJD(deviceId);
             
             // Start listening for UDP packets
-            Console.WriteLine($"\nListening for ExpressLRS WiFi Joystick on UDP port {LISTEN_PORT}...");
-            Console.WriteLine("Make sure your ELRS TX module is connected to the same WiFi network!");
+            Console.WriteLine($"\nListening for ExpressLRS / TBS Crossfire WiFi Joystick on UDP port {LISTEN_PORT}...");
+            Console.WriteLine("Make sure your ELRS or Crossfire TX module is connected to the same WiFi network!");
             Console.WriteLine("Press Ctrl+C to exit\n");
             
             // Setup Ctrl+C handler
@@ -112,15 +153,22 @@ namespace ELRSWifiJoystick
             try
             {
                 // Listen for joystick data packets directly
-                Console.WriteLine($"Listening for joystick data on port {JOYSTICK_PORT}...");
-                Console.WriteLine("Make sure your ELRS TX module is in WiFi Joystick mode!");
-                
+                Console.WriteLine($"Listening for joystick data on port {LISTEN_PORT}...");
+                Console.WriteLine("Make sure your ELRS/Crossfire TX module is in WiFi Joystick mode!");
+
                 udpClient = new UdpClient();
-                udpClient.Client.Bind(new IPEndPoint(IPAddress.Any, JOYSTICK_PORT));
+                udpClient.Client.Bind(new IPEndPoint(IPAddress.Any, LISTEN_PORT));
                 udpClient.Client.ReceiveTimeout = 100;
-                
+
                 IPEndPoint remoteEP = new IPEndPoint(IPAddress.Any, 0);
                 DateTime lastPacketTime = DateTime.Now;
+
+                // Proactively activate a known module (e.g. Crossfire via --tx <ip>)
+                // instead of waiting for its discovery beacon.
+                if (activationIP != null)
+                {
+                    EnsureStreaming(activationIP);
+                }
                 
                 while (running)
                 {
@@ -149,6 +197,19 @@ namespace ELRSWifiJoystick
                         if ((DateTime.Now - lastPacketTime).TotalSeconds > 2)
                         {
                             Console.WriteLine("Waiting for joystick data...");
+                            // Release a stale source lock so another module can take over.
+                            if (boundSource != null
+                                && (DateTime.Now - boundSourceLastData).TotalSeconds > SOURCE_TIMEOUT_SEC)
+                            {
+                                Console.WriteLine($"Source {boundSource} went quiet - releasing lock");
+                                boundSource = null;
+                            }
+                            // Re-kick a known module in case its stream stopped or the
+                            // initial activation POST was missed (throttled internally).
+                            if (activationIP != null)
+                            {
+                                EnsureStreaming(activationIP);
+                            }
                             Thread.Sleep(100);
                         }
                     }
@@ -187,11 +248,48 @@ namespace ELRSWifiJoystick
         }
         
         
-        private static bool StartJoystickStreaming(string elrsIP)
+        // Throttled activation: POST /udpcontrol at most once every 5s per module IP so
+        // the low-RAM WiFi module isn't flooded by repeated discovery beacons.
+        private static void EnsureStreaming(string moduleIP)
+        {
+            lock (lastActivation)
+            {
+                if (lastActivation.TryGetValue(moduleIP, out DateTime t)
+                    && (DateTime.Now - t).TotalSeconds < 5)
+                {
+                    return;
+                }
+                lastActivation[moduleIP] = DateTime.Now;
+            }
+            StartJoystickStreaming(moduleIP);
+        }
+
+        private static bool StartsWith(byte[] data, byte[] prefix)
+        {
+            if (data.Length < prefix.Length)
+                return false;
+            for (int i = 0; i < prefix.Length; i++)
+            {
+                if (data[i] != prefix[i])
+                    return false;
+            }
+            return true;
+        }
+
+        // Log a competing source once (not every packet) while it's being ignored.
+        private static void WarnIgnoredSource(string ip)
+        {
+            if (warnedSources.Add(ip))
+            {
+                Console.WriteLine($"Ignoring joystick data from {ip} - already locked to {boundSource}");
+            }
+        }
+
+        private static bool StartJoystickStreaming(string moduleIP)
         {
             try
             {
-                Console.WriteLine($"Sending joystick start request to http://{elrsIP}/udpcontrol");
+                Console.WriteLine($"Sending joystick start request to http://{moduleIP}/udpcontrol");
                 
                 using (var client = new System.Net.Http.HttpClient())
                 {
@@ -206,7 +304,7 @@ namespace ELRSWifiJoystick
                     };
                     
                     var formContent = new FormUrlEncodedContent(formData);
-                    var response = client.PostAsync($"http://{elrsIP}/udpcontrol", formContent).Result;
+                    var response = client.PostAsync($"http://{moduleIP}/udpcontrol", formContent).Result;
                     
                     Console.WriteLine($"HTTP Response: {response.StatusCode}");
                     
@@ -242,28 +340,21 @@ namespace ELRSWifiJoystick
             
             try
             {
-                        // Check if this is a service discovery packet (starts with "ELRS")
-                        if (data.Length >= 4 && data[0] == 0x45 && data[1] == 0x4C && data[2] == 0x52 && data[3] == 0x53)
-                        {
-                            Console.WriteLine("Received service discovery packet - trying to activate joystick mode...");
-                            
-                            // Extract TX IP from the remote endpoint
-                            string txIP = remoteEP.Address.ToString();
-                            Console.WriteLine($"Detected ELRS TX IP: {txIP}");
-                            
-                            // Try to activate joystick mode via HTTP
-                            if (StartJoystickStreaming(txIP))
-                            {
-                                Console.WriteLine("Joystick mode activated! Waiting for data...");
-                                // Don't return - continue processing packets
-                            }
-                            else
-                            {
-                                Console.WriteLine("Failed to activate joystick mode");
-                                return;
-                            }
-                        }
-                
+                // Discovery beacon: ExpressLRS announces with "ELRS", TBS Crossfire/Tracer
+                // with "VELOCIDRONE". Both are started by the same POST /udpcontrol. Don't
+                // wake a second module while we're already locked to one.
+                bool isCrossfireBeacon = StartsWith(data, CROSSFIRE_BEACON);
+                if (isCrossfireBeacon || StartsWith(data, ELRS_BEACON))
+                {
+                    string txIP = remoteEP.Address.ToString();
+                    if (boundSource == null || boundSource == txIP)
+                    {
+                        Console.WriteLine($"Discovery beacon from {(isCrossfireBeacon ? "Crossfire" : "ELRS")} module {txIP} - activating joystick mode");
+                        EnsureStreaming(txIP);
+                    }
+                    return;   // beacon carries no channel data
+                }
+
                 // Parse packet header
                 int frameType = data[0];
                 int channelCount = data[1];
@@ -278,7 +369,32 @@ namespace ELRSWifiJoystick
                 {
                     return;
                 }
-                
+
+                // Single-source lock: bind to the first module streaming real channel data
+                // and ignore any other, so two radios can't fight over the joystick. If the
+                // bound module goes quiet, release the lock so another can take over.
+                string source = remoteEP.Address.ToString();
+                if (boundSource != null && boundSource != source)
+                {
+                    if ((DateTime.Now - boundSourceLastData).TotalSeconds > SOURCE_TIMEOUT_SEC)
+                    {
+                        Console.WriteLine($"Source {boundSource} went quiet - releasing lock");
+                        boundSource = null;
+                    }
+                    else
+                    {
+                        WarnIgnoredSource(source);
+                        return;
+                    }
+                }
+                if (boundSource == null)
+                {
+                    boundSource = source;
+                    warnedSources.Clear();
+                    Console.WriteLine($"Joystick source locked to {source}");
+                }
+                boundSourceLastData = DateTime.Now;
+
                 // Parse channels (16-bit LITTLE ENDIAN values, 15-bit range: 0-32767)
                 int[] channels = new int[channelCount];
                 for (int i = 0; i < channelCount; i++)

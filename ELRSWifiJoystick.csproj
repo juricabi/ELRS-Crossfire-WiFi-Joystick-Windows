@@ -21,8 +21,8 @@
     <AssemblyName>ELRSWifiJoystick</AssemblyName>
     <AssemblyTitle>ExpressLRS WiFi Joystick</AssemblyTitle>
     <AssemblyDescription>ExpressLRS WiFi Joystick for Windows</AssemblyDescription>
-    <AssemblyVersion>1.0.0.0</AssemblyVersion>
-    <FileVersion>1.0.0.0</FileVersion>
+    <AssemblyVersion>1.1.0.0</AssemblyVersion>
+    <FileVersion>1.1.0.0</FileVersion>
     
     <!-- Application icon -->
     <ApplicationIcon>icons\app.ico</ApplicationIcon>
