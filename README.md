@@ -156,7 +156,14 @@ against v3.10.)
    - Select "vJoy Device" as your controller
    - Calibrate the axes if needed
 
-4. **Exit**: Press `Ctrl+C` for graceful shutdown
+4. **Exit**: Press `Ctrl+C`. The app centers the virtual joystick axes and releases the
+   vJoy device cleanly.
+
+> **Stopping the module's stream:** the ELRS/Crossfire WiFi module has **no remote stop
+> command** — once activated it keeps broadcasting channel data until it is powered off,
+> rebooted, or its WiFi drops (the same way ELRS WiFi-joystick mode is exited on the radio,
+> not the PC). Closing this app only stops *reading* the stream; it does not and cannot stop
+> the module from sending. This is a module-firmware behaviour, not an app limitation.
 
 ## 📋 Channel Mapping
 

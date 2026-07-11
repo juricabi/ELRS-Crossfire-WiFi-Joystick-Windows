@@ -226,9 +226,14 @@ namespace ELRSWifiJoystick
                 {
                     udpClient.Close();
                 }
-                
+
+                // Center the axes before releasing so the virtual joystick doesn't freeze
+                // at the last received stick position. Note: the module itself keeps
+                // broadcasting until it is powered off / rebooted - it has no stop command.
+                joystick.ResetVJD(deviceId);
                 joystick.RelinquishVJD(deviceId);
                 Console.WriteLine("\nCleaned up and exiting...");
+                Console.WriteLine("(The TX module keeps broadcasting until powered off - it has no remote stop.)");
             }
         }
         
@@ -341,13 +346,18 @@ namespace ELRSWifiJoystick
             try
             {
                 // Discovery beacon: ExpressLRS announces with "ELRS", TBS Crossfire/Tracer
-                // with "VELOCIDRONE". Both are started by the same POST /udpcontrol. Don't
-                // wake a second module while we're already locked to one.
+                // with "VELOCIDRONE". Both are started by the same POST /udpcontrol. The
+                // module keeps beaconing even while it streams, so only (re)activate when
+                // we're NOT already receiving data from it and aren't locked to another
+                // module - otherwise we'd needlessly re-POST on every beacon.
                 bool isCrossfireBeacon = StartsWith(data, CROSSFIRE_BEACON);
                 if (isCrossfireBeacon || StartsWith(data, ELRS_BEACON))
                 {
                     string txIP = remoteEP.Address.ToString();
-                    if (boundSource == null || boundSource == txIP)
+                    bool lockedToOther = boundSource != null && boundSource != txIP;
+                    bool alreadyStreaming = boundSource == txIP
+                        && (DateTime.Now - boundSourceLastData).TotalSeconds < SOURCE_TIMEOUT_SEC;
+                    if (!lockedToOther && !alreadyStreaming)
                     {
                         Console.WriteLine($"Discovery beacon from {(isCrossfireBeacon ? "Crossfire" : "ELRS")} module {txIP} - activating joystick mode");
                         EnsureStreaming(txIP);
