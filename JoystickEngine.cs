@@ -203,7 +203,7 @@ namespace ELRSWifiJoystick
                 {
                     Log?.Invoke($"This PC: {string.Join(", ", ips)}");
                     if (ips.Count > 1)
-                        Log?.Invoke("  (multiple adapters - module must be on the same network as one of these)");
+                        Log?.Invoke("Multiple adapters - your module must be on one of these networks.");
                 }
             }
             catch { }
