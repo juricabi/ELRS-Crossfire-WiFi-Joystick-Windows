@@ -2,28 +2,34 @@
 
 <div align="center">
 
-**A Windows implementation of the ExpressLRS & TBS Crossfire WiFi Joystick application**
+**Use your ExpressLRS or TBS Crossfire/Tracer radio as a wireless joystick on Windows — with a live visual app**
 
 [![.NET](https://img.shields.io/badge/.NET-6.0-blue.svg)](https://dotnet.microsoft.com/download/dotnet/6.0)
 [![Platform](https://img.shields.io/badge/Platform-Windows-lightgrey.svg)](https://www.microsoft.com/windows)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
+<img src="docs/screenshot.png" alt="ELRS / TBS Crossfire WiFi Joystick app" width="420">
+
 </div>
 
-This application receives UDP packets from your **ExpressLRS (ELRS)** *or* **TBS Crossfire / Tracer** TX module and creates a virtual joystick using vJoy, allowing you to use your RC transmitter with flight simulators like VelociDrone, Liftoff, DRL Simulator, or any Windows application that supports joystick input.
+This app turns your **ExpressLRS (ELRS)** *or* **TBS Crossfire / Tracer** TX module's WiFi output into a virtual joystick (via vJoy), so you can fly flight simulators like VelociDrone, Liftoff, or DRL — **wirelessly, no cables** — plus anything on Windows that takes joystick input.
 
 Both radios use the same "WiFi joystick" protocol (the one VelociDrone Mobile speaks), so setup is identical: put the module on your WiFi and run the app. The only difference is the discovery beacon — ELRS announces itself as `ELRS`, Crossfire as `VELOCIDRONE` — and the app handles both automatically.
 
+> **v2.0** is now a full visual app: live axis bars, packet rate + jitter, connection status, and one-click firewall setup. It still auto-discovers your module and just works.
+
 ## ✨ Features
 
-- 🎮 **Virtual Joystick Creation** - Uses vJoy to create Windows-compatible virtual joystick
-- 📡 **ELRS + Crossfire Support** - Full support for the ELRS/Crossfire WiFi Joystick protocol (16 channels, 15-bit data)
-- 🔄 **Real-time Processing** - Low latency (~90-100Hz update rate) with direct channel mapping
-- 🌐 **Auto-discovery** - Automatically detects and activates ELRS *and* TBS Crossfire/Tracer modules
-- 🔒 **Single-source lock** - If both an ELRS and a Crossfire module are on the same network, the app locks onto whichever streams first so they can't fight over the joystick
-- 📊 **Connection Monitoring** - Real-time packet rate monitoring and connection status
-- 🛡️ **Graceful Shutdown** - Clean exit with Ctrl+C
-- 📦 **Single Executable** - Production builds create self-contained single-file executables
+- 🎮 **Virtual joystick** - creates a Windows vJoy device from your radio's WiFi output
+- 📡 **ELRS + Crossfire/Tracer** - full support for the ELRS/Crossfire WiFi joystick protocol (16 channels, 15-bit)
+- 🖥️ **Live visual app** - real-time axis bars (100 fps), packet **rate + jitter**, and connection status at a glance
+- 🌐 **Auto-discovery** - detects and activates ELRS *and* TBS Crossfire/Tracer modules automatically (or type the IP)
+- 🛡️ **One-click firewall** - detects and adds the required Windows Firewall rule for you (the #1 "no data" cause)
+- 🔒 **Single-source lock** - if two modules are on the network, only one drives the joystick; pick a specific one by IP
+- 📉 **Accurate metrics** - high-resolution jitter/rate measurement
+- ❓ **Built-in Help** - a Help button with short tutorials for every feature
+- 🪶 **Light & CPU-friendly** - minimize to the system tray to pause the on-screen bars and drop CPU to ~1% (the joystick keeps working); single-instance
+- 📦 **No install** - self-contained single-file `.exe`, runs on any Windows 10/11 PC
 
 ## 🚀 Quick Start
 
@@ -126,44 +132,37 @@ against v3.10.)
 
 ## 🎮 Usage
 
-1. **Start the Application**:
-   ```bash
-   # From source
-   dotnet run -c Release
-   
-   # Or run the executable
-   ELRSWifiJoystick.exe
+1. **Run `ELRSWifiJoystick.exe`.** The app opens, initializes vJoy, and starts listening
+   automatically. The first time, accept the one-time Windows permission (UAC) prompt so the
+   firewall lets the joystick data through.
 
-   # Activate a Crossfire module instantly (skip the ~8s beacon wait)
-   ELRSWifiJoystick.exe --tx 192.168.2.138
+2. **Watch the status banner:**
+   - 🟠 *Searching for module…* — make sure your module is on the same WiFi.
+   - 🟢 *Connected — streaming* — the axis bars move with your sticks, and you'll see the
+     packet **rate** and **jitter**.
 
-   # Listen on a custom UDP port
-   ELRSWifiJoystick.exe 11001
-   ```
+3. **Use in your flight simulator:** open VelociDrone / Liftoff / DRL etc., select
+   **"vJoy Device"** as the controller, and calibrate the axes.
 
-   | Argument | Description |
-   |----------|-------------|
-   | `<port>` | UDP listen port (default `11000`) |
-   | `--tx <ip>` | Activate the module at this IP immediately instead of waiting for its discovery beacon (also `--crossfire` / `--activate`) |
+4. **Optional controls:**
+   - **Module IP** — leave blank for auto-discovery, or type your module's IP and press
+     **Connect** to target a specific module (skips the beacon wait; find the IP on the
+     module's WiFi web page).
+   - **Port** — the UDP port (default `11000`); change it while stopped.
+   - **Fix Firewall** — appears only if the firewall is blocking data.
+   - **Help** — opens short tutorials for every feature.
+   - Minimizing to the tray pauses the on-screen bars and drops CPU to ~1% — the joystick
+     keeps working, so **minimize while flying** for best performance.
+   - Closing the window centers the vJoy axes and releases the device.
 
-2. **Verify Connection**:
-   - The application will initialize vJoy and start listening on port 11000
-   - You'll see connection status and packet rate information
-   - Example: `Receiving data: 100 packets/sec from 192.168.1.100`
-
-3. **Use in Flight Simulator**:
-   - Open your flight simulator (VelociDrone, Liftoff, DRL Simulator, etc.)
-   - Select "vJoy Device" as your controller
-   - Calibrate the axes if needed
-
-4. **Exit**: Press `Ctrl+C`. The app centers the virtual joystick axes and releases the
-   vJoy device cleanly.
+**Command-line (optional):** `ELRSWifiJoystick.exe [port] [--tx <module-ip>]` — e.g.
+`ELRSWifiJoystick.exe --tx 192.168.2.138` pre-fills the module IP on launch.
 
 > **Stopping the module's stream:** the ELRS/Crossfire WiFi module has **no remote stop
 > command** — once activated it keeps broadcasting channel data until it is powered off,
-> rebooted, or its WiFi drops (the same way ELRS WiFi-joystick mode is exited on the radio,
-> not the PC). Closing this app only stops *reading* the stream; it does not and cannot stop
-> the module from sending. This is a module-firmware behaviour, not an app limitation.
+> rebooted, or its WiFi drops. Closing this app only stops *reading* the stream; it does not
+> (and cannot) stop the module from sending. This is a module-firmware behaviour, not an app
+> limitation.
 
 ## 📋 Channel Mapping
 
@@ -194,13 +193,34 @@ The application maps ExpressLRS channels to vJoy axes:
 | No joystick input in simulator | Verify vJoy device is enabled and simulator recognizes "vJoy Device" |
 | Crossfire not detected | Confirm the module is on the same network (ping its IP); WiFi-module firmware must be **v2.17+**. Try `--tx <ip>` to activate directly |
 | Crossfire axes look wrong/half-throw | Channels are passed through as 15-bit like ELRS. If your radio's output differs, recalibrate the axes in the simulator |
+| **Connected but no data / axes don't move** | **Windows Firewall is blocking the incoming UDP stream.** The app adds a rule automatically (accept the one-time UAC prompt); if you declined it, click **Fix Firewall** in the app. |
 
-### Network Issues
+### ⚠️ Most common issue: "activated OK but no data" = Firewall
 
-- **Firewall**: Allow the application through Windows Firewall
-- **Network**: Ensure PC and ELRS TX are on the same network
-- **Port**: Check that UDP port 11000 is not blocked
-- **WiFi**: Verify ELRS TX module is connected to WiFi
+If the module activates (the app shows it found the module) but the axes never move, the
+inbound joystick stream is being dropped by **Windows Firewall**. Activation works because
+that's an *outbound* request; the joystick stream is *inbound* UDP, which Windows blocks by
+default.
+
+**The app handles this for you:** on first run it detects the missing rule and adds it via a
+one-time **Windows permission (UAC) prompt** — just click *Yes*. If you dismissed it, press the
+**Fix Firewall** button in the app.
+
+Prefer to do it manually? Run this once in an **Administrator** terminal:
+```
+netsh advfirewall firewall add rule name="ELRS WiFi Joystick" dir=in action=allow protocol=UDP localport=11000
+```
+…or *Windows Defender Firewall → Allow an app…* → add `ELRSWifiJoystick.exe` for **both Private and Public**.
+
+### Other network issues
+
+- **Network**: Ensure the PC and the TX module are on the **same** network/subnet. The app
+  prints your PC's IPv4 address(es) at startup — the module must be reachable from one of them.
+- **Multiple adapters**: VPNs and VMware/Hyper-V virtual adapters can confuse routing. If the
+  app lists several IPs, try temporarily disabling unused adapters.
+- **Port**: Confirm UDP port 11000 isn't blocked by another firewall/antivirus.
+- **WiFi**: Verify the TX module actually joined the network and has an IP (check your router's
+  device list). The ESP WiFi module is **2.4 GHz only**.
 
 ### vJoy Issues
 

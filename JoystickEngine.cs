@@ -1,0 +1,367 @@
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Net;
+using System.Net.Http;
+using System.Net.Sockets;
+using System.Text;
+using System.Threading;
+using vJoyInterfaceWrap;
+
+namespace ELRSWifiJoystick
+{
+    enum EngineState { Stopped, Searching, Streaming, Error }
+
+    // Core WiFi-joystick engine: receives the ELRS/Crossfire UDP stream, feeds vJoy, and
+    // raises events for a UI. Runs its own background thread; all events fire on that thread,
+    // so subscribers must marshal to their UI thread.
+    class JoystickEngine
+    {
+        public int Port = 11000;
+        public string? ActivationIP;
+
+        public event Action<string>? Log;
+        public event Action<EngineState, string>? StateChanged;   // state, detail (module ip / reason)
+        public event Action<int[]>? ChannelsUpdated;              // raw channel values (0-32767)
+        public event Action<double, double, int>? StatsUpdated;   // rateHz, jitterMs, frames/sec
+
+        private static readonly byte[] ELRS_BEACON = Encoding.ASCII.GetBytes("ELRS");
+        private static readonly byte[] XF_BEACON = Encoding.ASCII.GetBytes("VELOCIDRONE");
+        private const double SOURCE_TIMEOUT_SEC = 3.0;
+
+        // One shared HttpClient for the whole app (creating one per request can exhaust sockets).
+        private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(5) };
+
+        private vJoy joystick = new vJoy();
+        private uint deviceId;
+        private volatile bool running;
+        private Thread? thread;
+        private UdpClient? udp;
+
+        private string? boundSource;
+        private DateTime boundSourceLastData;
+        private readonly HashSet<string> warned = new();
+        private readonly Dictionary<string, DateTime> lastActivation = new();
+        private DateTime? firstActivationTime;
+        private bool firewallHintShown;
+
+        // stats (high-resolution Stopwatch timestamps -> accurate jitter, not ~15ms-granular)
+        private readonly List<long> arrivalTicks = new();
+        private DateTime lastStats = DateTime.Now;
+        private int frameCount;
+
+        public bool IsRunning => running;
+        public uint DeviceId => deviceId;
+        public string? Source => boundSource;
+
+        public void Start()
+        {
+            if (running) return;
+            // Wait for any previous run to fully exit so its UDP socket is released before
+            // we bind again (otherwise a quick Stop->Start races on the port).
+            thread?.Join(1500);
+            running = true;
+            thread = new Thread(Run) { IsBackground = true, Name = "joystick-engine" };
+            thread.Start();
+        }
+
+        public void Stop() => running = false;
+
+        // Stop and wait for the worker to finish (so vJoy is released cleanly) - used on exit.
+        public void StopAndWait(int ms)
+        {
+            running = false;
+            try { thread?.Join(ms); } catch { }
+        }
+
+        // Set/replace the module IP to activate, live. The actual HTTP activation happens on
+        // the engine thread (never blocks the UI). Pass null/empty to rely on beacon discovery.
+        public void SetTarget(string? ip)
+        {
+            string? t = string.IsNullOrWhiteSpace(ip) ? null : ip.Trim();
+            ActivationIP = t;
+            if (t != null)
+            {
+                lock (lastActivation) lastActivation.Remove(t); // allow immediate (re)activation
+                boundSource = null;                              // let the new target take over
+                Log?.Invoke($"Target module set to {t} - connecting...");
+            }
+        }
+
+        private void SetState(EngineState s, string detail = "") => StateChanged?.Invoke(s, detail);
+
+        private void Run()
+        {
+            joystick = new vJoy();
+            if (!joystick.vJoyEnabled())
+            {
+                Log?.Invoke("ERROR: vJoy driver not enabled. Install vJoy from vjoystick.sourceforge.net");
+                SetState(EngineState.Error, "vJoy not enabled");
+                running = false;
+                return;
+            }
+            Log?.Invoke($"vJoy version {joystick.GetvJoyVersion()}");
+
+            deviceId = FindDevice();
+            if (deviceId == 0)
+            {
+                Log?.Invoke("ERROR: no free vJoy device. Enable one in 'Configure vJoy'.");
+                SetState(EngineState.Error, "no free vJoy device");
+                running = false;
+                return;
+            }
+
+            var st = joystick.GetVJDStatus(deviceId);
+            if (st == VjdStat.VJD_STAT_BUSY || st == VjdStat.VJD_STAT_MISS)
+            {
+                Log?.Invoke($"ERROR: vJoy device {deviceId} unavailable ({st}).");
+                SetState(EngineState.Error, $"vJoy {st}");
+                running = false;
+                return;
+            }
+            if (!joystick.AcquireVJD(deviceId))
+            {
+                Log?.Invoke($"ERROR: failed to acquire vJoy device {deviceId}.");
+                SetState(EngineState.Error, "acquire failed");
+                running = false;
+                return;
+            }
+            joystick.ResetVJD(deviceId);
+            Log?.Invoke($"Using vJoy device {deviceId}");
+
+            try
+            {
+                udp = new UdpClient();
+                udp.Client.Bind(new IPEndPoint(IPAddress.Any, Port));
+                udp.Client.ReceiveTimeout = 100;
+            }
+            catch (Exception ex)
+            {
+                Log?.Invoke($"ERROR: cannot listen on UDP port {Port} - it may already be in use " +
+                            $"(another instance, or another app on this port). {ex.Message}");
+                SetState(EngineState.Error, $"UDP port {Port} in use");
+                Cleanup();
+                running = false;
+                return;
+            }
+
+            Log?.Invoke($"Listening for joystick data on UDP {Port}");
+            LogLocalAddresses();
+            SetState(EngineState.Searching, "waiting for module");
+            if (ActivationIP != null) EnsureStreaming(ActivationIP);
+
+            IPEndPoint remote = new IPEndPoint(IPAddress.Any, 0);
+            while (running)
+            {
+                try
+                {
+                    byte[] data = udp.Receive(ref remote);
+                    Process(data, remote);
+                }
+                catch (SocketException)
+                {
+                    Tick(); // receive timeout (~10x/sec)
+                }
+                catch (Exception ex)
+                {
+                    Log?.Invoke($"recv error: {ex.Message}");
+                }
+
+                if ((DateTime.Now - lastStats).TotalSeconds >= 1.0)
+                    EmitStats();
+            }
+
+            Cleanup();
+            SetState(EngineState.Stopped, "");
+            Log?.Invoke("Stopped. (The module keeps broadcasting until powered off.)");
+        }
+
+        private void Cleanup()
+        {
+            try { udp?.Close(); } catch { }
+            try { joystick.ResetVJD(deviceId); joystick.RelinquishVJD(deviceId); } catch { }
+        }
+
+        private uint FindDevice()
+        {
+            for (uint id = 1; id <= 16; id++)
+                if (joystick.GetVJDStatus(id) == VjdStat.VJD_STAT_FREE) return id;
+            return 0;
+        }
+
+        // The module streams to the network it sees us on; log our IPv4 address(es) so a
+        // wrong-subnet / VPN / virtual-adapter mismatch is easy to spot.
+        private void LogLocalAddresses()
+        {
+            try
+            {
+                var ips = new List<string>();
+                foreach (var ip in Dns.GetHostAddresses(Dns.GetHostName()))
+                    if (ip.AddressFamily == AddressFamily.InterNetwork && !IPAddress.IsLoopback(ip))
+                        ips.Add(ip.ToString());
+                if (ips.Count > 0)
+                {
+                    Log?.Invoke($"This PC: {string.Join(", ", ips)}");
+                    if (ips.Count > 1)
+                        Log?.Invoke("  (multiple adapters - module must be on the same network as one of these)");
+                }
+            }
+            catch { }
+        }
+
+        private void Tick()
+        {
+            // Release a stale lock so another module can take over.
+            if (boundSource != null && (DateTime.Now - boundSourceLastData).TotalSeconds > SOURCE_TIMEOUT_SEC)
+            {
+                Log?.Invoke($"Source {boundSource} went quiet - releasing lock");
+                boundSource = null;
+                SetState(EngineState.Searching, "waiting for module");
+            }
+
+            // Activated OK but no data -> almost always Windows Firewall. Hint once.
+            if (firstActivationTime != null && boundSource == null && !firewallHintShown
+                && (DateTime.Now - firstActivationTime.Value).TotalSeconds > 4)
+            {
+                firewallHintShown = true;
+                Log?.Invoke("!! Activated OK but NO data arriving - almost always Windows Firewall. Click 'Fix Firewall'.");
+                SetState(EngineState.Searching, "activated, but no data (firewall?)");
+            }
+
+            if (ActivationIP != null && boundSource == null)
+                EnsureStreaming(ActivationIP);
+        }
+
+        private void Process(byte[] data, IPEndPoint remote)
+        {
+            if (data.Length < 3) return;
+
+            bool xf = StartsWith(data, XF_BEACON);
+            if (xf || StartsWith(data, ELRS_BEACON))
+            {
+                string ip = remote.Address.ToString();
+                if (ActivationIP != null && ip != ActivationIP) return; // only the chosen module
+                bool lockedOther = boundSource != null && boundSource != ip;
+                bool streaming = boundSource == ip && (DateTime.Now - boundSourceLastData).TotalSeconds < SOURCE_TIMEOUT_SEC;
+                if (!lockedOther && !streaming)
+                {
+                    Log?.Invoke($"Discovery beacon from {(xf ? "Crossfire" : "ELRS")} module {ip} - activating");
+                    EnsureStreaming(ip);
+                }
+                return;
+            }
+
+            int count = data[1];
+            if (count < 4 || count > 16) return;
+            if (data.Length < 2 + count * 2) return;
+
+            string src = remote.Address.ToString();
+            // If a specific module was chosen (Module IP / Connect), accept ONLY that one, so a
+            // different module that's still broadcasting can't steal or hold the lock.
+            if (ActivationIP != null && src != ActivationIP) return;
+            if (boundSource != null && boundSource != src)
+            {
+                if ((DateTime.Now - boundSourceLastData).TotalSeconds > SOURCE_TIMEOUT_SEC)
+                    boundSource = null;
+                else
+                {
+                    if (warned.Add(src)) Log?.Invoke($"Ignoring 2nd source {src} (locked to {boundSource})");
+                    return;
+                }
+            }
+            if (boundSource == null)
+            {
+                boundSource = src;
+                warned.Clear();
+                firstActivationTime = null;
+                firewallHintShown = false;
+                Log?.Invoke($"Joystick source locked to {src}");
+                SetState(EngineState.Streaming, src);
+            }
+            boundSourceLastData = DateTime.Now;
+
+            int[] ch = new int[count];
+            for (int i = 0; i < count; i++)
+                ch[i] = data[2 + i * 2] | (data[2 + i * 2 + 1] << 8);
+
+            Apply(ch);
+            ChannelsUpdated?.Invoke(ch);
+
+            frameCount++;
+            arrivalTicks.Add(Stopwatch.GetTimestamp());
+        }
+
+        private void EmitStats()
+        {
+            lastStats = DateTime.Now;
+            double hz = 0, jitter = 0;
+            if (arrivalTicks.Count > 2)
+            {
+                double toMs = 1000.0 / Stopwatch.Frequency;
+                var gaps = new List<double>();
+                for (int i = 1; i < arrivalTicks.Count; i++) gaps.Add((arrivalTicks[i] - arrivalTicks[i - 1]) * toMs);
+                double mean = 0; foreach (var g in gaps) mean += g; mean /= gaps.Count;
+                double varSum = 0; foreach (var g in gaps) varSum += (g - mean) * (g - mean);
+                jitter = Math.Sqrt(varSum / gaps.Count);
+                double spanMs = (arrivalTicks[arrivalTicks.Count - 1] - arrivalTicks[0]) * toMs;
+                if (spanMs > 0) hz = (arrivalTicks.Count - 1) * 1000.0 / spanMs;
+            }
+            StatsUpdated?.Invoke(hz, jitter, frameCount);
+            frameCount = 0;
+            arrivalTicks.Clear();
+        }
+
+        private static bool StartsWith(byte[] d, byte[] p)
+        {
+            if (d.Length < p.Length) return false;
+            for (int i = 0; i < p.Length; i++) if (d[i] != p[i]) return false;
+            return true;
+        }
+
+        private void Apply(int[] ch)
+        {
+            void Set(int i, HID_USAGES ax) { if (ch.Length > i) joystick.SetAxis(ch[i], deviceId, ax); }
+            Set(0, HID_USAGES.HID_USAGE_X);
+            Set(1, HID_USAGES.HID_USAGE_Y);
+            Set(2, HID_USAGES.HID_USAGE_RX);
+            Set(3, HID_USAGES.HID_USAGE_RY);
+            Set(4, HID_USAGES.HID_USAGE_RZ);
+            Set(5, HID_USAGES.HID_USAGE_Z);
+            Set(6, HID_USAGES.HID_USAGE_SL0);
+            Set(7, HID_USAGES.HID_USAGE_SL1);
+        }
+
+        private void EnsureStreaming(string ip)
+        {
+            lock (lastActivation)
+            {
+                if (lastActivation.TryGetValue(ip, out var t) && (DateTime.Now - t).TotalSeconds < 5)
+                    return;
+                lastActivation[ip] = DateTime.Now;
+            }
+            if (StartStreaming(ip) && firstActivationTime == null)
+                firstActivationTime = DateTime.Now;
+        }
+
+        private bool StartStreaming(string ip)
+        {
+            try
+            {
+                var form = new FormUrlEncodedContent(new[]
+                {
+                    new KeyValuePair<string, string>("action", "joystick_begin"),
+                    new KeyValuePair<string, string>("interval", "10000"),
+                    new KeyValuePair<string, string>("channels", "8"),
+                });
+                var resp = Http.PostAsync($"http://{ip}/udpcontrol", form).Result;
+                Log?.Invoke($"Activation POST -> {ip}: {(int)resp.StatusCode} {resp.StatusCode}");
+                return resp.IsSuccessStatusCode;
+            }
+            catch (Exception ex)
+            {
+                Log?.Invoke($"Activation failed for {ip}: {ex.Message}");
+                return false;
+            }
+        }
+    }
+}
