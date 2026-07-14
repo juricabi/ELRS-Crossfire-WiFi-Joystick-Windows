@@ -27,10 +27,20 @@ namespace ELRSWifiJoystick
 
         private static readonly byte[] ELRS_BEACON = Encoding.ASCII.GetBytes("ELRS");
         private static readonly byte[] XF_BEACON = Encoding.ASCII.GetBytes("VELOCIDRONE");
-        private const double SOURCE_TIMEOUT_SEC = 3.0;
+        internal const double SOURCE_TIMEOUT_SEC = 3.0;
 
         // One shared HttpClient for the whole app (creating one per request can exhaust sockets).
         private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(5) };
+
+        // ---- test seams (production behaviour is unchanged when these are left alone) ----
+        // Injectable clock so time-based logic (lock timeout, activation throttle) is testable.
+        internal Func<DateTime> Clock = () => DateTime.Now;
+        // When set, channel output goes here instead of vJoy (tests record what was applied).
+        internal Action<int[]>? OutputOverride;
+        // When set, replaces the HTTP activation POST (tests must never touch the network).
+        internal Func<string, bool>? ActivateOverride;
+        // Skips vJoy init/teardown so the socket loop can be tested without the driver.
+        internal bool SkipVJoyForTest;
 
         private vJoy joystick = new vJoy();
         private uint deviceId;
@@ -90,10 +100,10 @@ namespace ELRSWifiJoystick
 
         private void SetState(EngineState s, string detail = "") => StateChanged?.Invoke(s, detail);
 
-        private void Run()
+        // Fresh session state - a previous run's source lock must not leak into the next
+        // one, or the "locked -> Streaming" transition never fires again after a restart.
+        internal void ResetSessionState()
         {
-            // Fresh session state - a previous run's source lock must not leak into this
-            // one, or the "locked -> Streaming" transition never fires again after a restart.
             boundSource = null;
             warned.Clear();
             firstActivationTime = null;
@@ -101,43 +111,51 @@ namespace ELRSWifiJoystick
             arrivalTicks.Clear();
             frameCount = 0;
             lock (lastActivation) lastActivation.Clear();
+        }
 
-            joystick = new vJoy();
-            if (!joystick.vJoyEnabled())
-            {
-                Log?.Invoke("ERROR: vJoy driver not enabled. Install vJoy from vjoystick.sourceforge.net");
-                SetState(EngineState.Error, "vJoy not enabled");
-                running = false;
-                return;
-            }
-            Log?.Invoke($"vJoy version {joystick.GetvJoyVersion()}");
+        private void Run()
+        {
+            ResetSessionState();
 
-            deviceId = FindDevice();
-            if (deviceId == 0)
+            if (!SkipVJoyForTest)
             {
-                Log?.Invoke("ERROR: no free vJoy device. Enable one in 'Configure vJoy'.");
-                SetState(EngineState.Error, "no free vJoy device");
-                running = false;
-                return;
-            }
+                joystick = new vJoy();
+                if (!joystick.vJoyEnabled())
+                {
+                    Log?.Invoke("ERROR: vJoy driver not enabled. Install vJoy from vjoystick.sourceforge.net");
+                    SetState(EngineState.Error, "vJoy not enabled");
+                    running = false;
+                    return;
+                }
+                Log?.Invoke($"vJoy version {joystick.GetvJoyVersion()}");
 
-            var st = joystick.GetVJDStatus(deviceId);
-            if (st == VjdStat.VJD_STAT_BUSY || st == VjdStat.VJD_STAT_MISS)
-            {
-                Log?.Invoke($"ERROR: vJoy device {deviceId} unavailable ({st}).");
-                SetState(EngineState.Error, $"vJoy {st}");
-                running = false;
-                return;
+                deviceId = FindDevice();
+                if (deviceId == 0)
+                {
+                    Log?.Invoke("ERROR: no free vJoy device. Enable one in 'Configure vJoy'.");
+                    SetState(EngineState.Error, "no free vJoy device");
+                    running = false;
+                    return;
+                }
+
+                var st = joystick.GetVJDStatus(deviceId);
+                if (st == VjdStat.VJD_STAT_BUSY || st == VjdStat.VJD_STAT_MISS)
+                {
+                    Log?.Invoke($"ERROR: vJoy device {deviceId} unavailable ({st}).");
+                    SetState(EngineState.Error, $"vJoy {st}");
+                    running = false;
+                    return;
+                }
+                if (!joystick.AcquireVJD(deviceId))
+                {
+                    Log?.Invoke($"ERROR: failed to acquire vJoy device {deviceId}.");
+                    SetState(EngineState.Error, "acquire failed");
+                    running = false;
+                    return;
+                }
+                joystick.ResetVJD(deviceId);
+                Log?.Invoke($"Using vJoy device {deviceId}");
             }
-            if (!joystick.AcquireVJD(deviceId))
-            {
-                Log?.Invoke($"ERROR: failed to acquire vJoy device {deviceId}.");
-                SetState(EngineState.Error, "acquire failed");
-                running = false;
-                return;
-            }
-            joystick.ResetVJD(deviceId);
-            Log?.Invoke($"Using vJoy device {deviceId}");
 
             try
             {
@@ -189,7 +207,10 @@ namespace ELRSWifiJoystick
         private void Cleanup()
         {
             try { udp?.Close(); } catch { }
-            try { joystick.ResetVJD(deviceId); joystick.RelinquishVJD(deviceId); } catch { }
+            if (!SkipVJoyForTest)
+            {
+                try { joystick.ResetVJD(deviceId); joystick.RelinquishVJD(deviceId); } catch { }
+            }
         }
 
         private uint FindDevice()
@@ -219,10 +240,10 @@ namespace ELRSWifiJoystick
             catch { }
         }
 
-        private void Tick()
+        internal void Tick()
         {
             // Release a stale lock so another module can take over.
-            if (boundSource != null && (DateTime.Now - boundSourceLastData).TotalSeconds > SOURCE_TIMEOUT_SEC)
+            if (boundSource != null && (Clock() - boundSourceLastData).TotalSeconds > SOURCE_TIMEOUT_SEC)
             {
                 Log?.Invoke($"Source {boundSource} went quiet - releasing lock");
                 boundSource = null;
@@ -231,7 +252,7 @@ namespace ELRSWifiJoystick
 
             // Activated OK but no data -> almost always Windows Firewall. Hint once.
             if (firstActivationTime != null && boundSource == null && !firewallHintShown
-                && (DateTime.Now - firstActivationTime.Value).TotalSeconds > 4)
+                && (Clock() - firstActivationTime.Value).TotalSeconds > 4)
             {
                 firewallHintShown = true;
                 Log?.Invoke("!! Activated OK but NO data arriving - almost always Windows Firewall. Click 'Fix Firewall'.");
@@ -242,7 +263,7 @@ namespace ELRSWifiJoystick
                 EnsureStreaming(ActivationIP);
         }
 
-        private void Process(byte[] data, IPEndPoint remote)
+        internal void Process(byte[] data, IPEndPoint remote)
         {
             if (data.Length < 3) return;
 
@@ -252,7 +273,7 @@ namespace ELRSWifiJoystick
                 string ip = remote.Address.ToString();
                 if (ActivationIP != null && ip != ActivationIP) return; // only the chosen module
                 bool lockedOther = boundSource != null && boundSource != ip;
-                bool streaming = boundSource == ip && (DateTime.Now - boundSourceLastData).TotalSeconds < SOURCE_TIMEOUT_SEC;
+                bool streaming = boundSource == ip && (Clock() - boundSourceLastData).TotalSeconds < SOURCE_TIMEOUT_SEC;
                 if (!lockedOther && !streaming)
                 {
                     Log?.Invoke($"Discovery beacon from {(xf ? "Crossfire" : "ELRS")} module {ip} - activating");
@@ -271,7 +292,7 @@ namespace ELRSWifiJoystick
             if (ActivationIP != null && src != ActivationIP) return;
             if (boundSource != null && boundSource != src)
             {
-                if ((DateTime.Now - boundSourceLastData).TotalSeconds > SOURCE_TIMEOUT_SEC)
+                if ((Clock() - boundSourceLastData).TotalSeconds > SOURCE_TIMEOUT_SEC)
                     boundSource = null;
                 else
                 {
@@ -288,11 +309,16 @@ namespace ELRSWifiJoystick
                 Log?.Invoke($"Joystick source locked to {src}");
                 SetState(EngineState.Streaming, src);
             }
-            boundSourceLastData = DateTime.Now;
+            boundSourceLastData = Clock();
 
             int[] ch = new int[count];
             for (int i = 0; i < count; i++)
-                ch[i] = data[2 + i * 2] | (data[2 + i * 2 + 1] << 8);
+            {
+                int v = data[2 + i * 2] | (data[2 + i * 2 + 1] << 8);
+                // Defensive clamp to the 15-bit protocol range: a radio-less Crossfire module
+                // was observed idling at 0xF26A (62058), which would overflow the vJoy axis.
+                ch[i] = v > 32767 ? 32767 : v;
+            }
 
             Apply(ch);
             ChannelsUpdated?.Invoke(ch);
@@ -301,7 +327,14 @@ namespace ELRSWifiJoystick
             arrivalTicks.Add(Stopwatch.GetTimestamp());
         }
 
-        private void EmitStats()
+        // Test hook: inject a synthetic arrival timestamp (Stopwatch ticks) for stats tests.
+        internal void AddArrivalForTest(long timestamp)
+        {
+            arrivalTicks.Add(timestamp);
+            frameCount++;
+        }
+
+        internal void EmitStats()
         {
             lastStats = DateTime.Now;
             double hz = 0, jitter = 0;
@@ -321,7 +354,7 @@ namespace ELRSWifiJoystick
             arrivalTicks.Clear();
         }
 
-        private static bool StartsWith(byte[] d, byte[] p)
+        internal static bool StartsWith(byte[] d, byte[] p)
         {
             if (d.Length < p.Length) return false;
             for (int i = 0; i < p.Length; i++) if (d[i] != p[i]) return false;
@@ -330,6 +363,7 @@ namespace ELRSWifiJoystick
 
         private void Apply(int[] ch)
         {
+            if (OutputOverride != null) { OutputOverride(ch); return; }
             void Set(int i, HID_USAGES ax) { if (ch.Length > i) joystick.SetAxis(ch[i], deviceId, ax); }
             Set(0, HID_USAGES.HID_USAGE_X);
             Set(1, HID_USAGES.HID_USAGE_Y);
@@ -345,12 +379,13 @@ namespace ELRSWifiJoystick
         {
             lock (lastActivation)
             {
-                if (lastActivation.TryGetValue(ip, out var t) && (DateTime.Now - t).TotalSeconds < 5)
+                if (lastActivation.TryGetValue(ip, out var t) && (Clock() - t).TotalSeconds < 5)
                     return;
-                lastActivation[ip] = DateTime.Now;
+                lastActivation[ip] = Clock();
             }
-            if (StartStreaming(ip) && firstActivationTime == null)
-                firstActivationTime = DateTime.Now;
+            bool ok = ActivateOverride != null ? ActivateOverride(ip) : StartStreaming(ip);
+            if (ok && firstActivationTime == null)
+                firstActivationTime = Clock();
         }
 
         private bool StartStreaming(string ip)

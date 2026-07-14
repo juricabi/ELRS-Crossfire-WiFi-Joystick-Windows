@@ -11,12 +11,14 @@ namespace ELRSWifiJoystick
     {
         public const string RuleName = "ELRS WiFi Joystick";
 
-        public static bool RuleExists()
+        public static bool RuleExists() => RuleExists(RuleName);
+
+        internal static bool RuleExists(string ruleName)
         {
             try
             {
                 var psi = new ProcessStartInfo("netsh",
-                    $"advfirewall firewall show rule name=\"{RuleName}\"")
+                    $"advfirewall firewall show rule name=\"{ruleName}\"")
                 {
                     RedirectStandardOutput = true,
                     UseShellExecute = false,

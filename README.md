@@ -87,6 +87,18 @@ Both radios use the same "WiFi joystick" protocol (the one VelociDrone Mobile sp
 **build.bat** creates a development build with separate files, making it easier to debug and modify.  
 **publish.bat** creates a single-file executable perfect for distribution to end users.
 
+### Running the Tests
+
+The engine has a full xUnit test suite (`ELRSWifiJoystick.Tests/`) covering the protocol
+(beacons, channel frames, malformed packets), the source-lock state machine, activation
+throttling, rate/jitter math, and socket-level lifecycle (restart, port-in-use, clean
+shutdown). Tests inject a fake clock/output/activator, so they need neither vJoy nor a
+module:
+
+```bash
+dotnet test ELRSWifiJoystick.Tests -c Release
+```
+
 ## 🔧 Configuration
 
 ### vJoy Setup

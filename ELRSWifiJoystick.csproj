@@ -30,6 +30,14 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- This project lives at the repo root, so exclude the test project's sources from
+         the default compile glob, and let the test assembly see internal members. -->
+    <Compile Remove="ELRSWifiJoystick.Tests\**" />
+    <None Remove="ELRSWifiJoystick.Tests\**" />
+    <InternalsVisibleTo Include="ELRSWifiJoystick.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <Reference Include="vJoyInterfaceWrap">
       <HintPath>lib\vJoyInterfaceWrap.dll</HintPath>
       <Private>true</Private>
