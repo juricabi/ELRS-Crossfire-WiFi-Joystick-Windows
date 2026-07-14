@@ -92,6 +92,16 @@ namespace ELRSWifiJoystick
 
         private void Run()
         {
+            // Fresh session state - a previous run's source lock must not leak into this
+            // one, or the "locked -> Streaming" transition never fires again after a restart.
+            boundSource = null;
+            warned.Clear();
+            firstActivationTime = null;
+            firewallHintShown = false;
+            arrivalTicks.Clear();
+            frameCount = 0;
+            lock (lastActivation) lastActivation.Clear();
+
             joystick = new vJoy();
             if (!joystick.vJoyEnabled())
             {
