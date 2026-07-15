@@ -4,7 +4,7 @@
 
 **Use your ExpressLRS or TBS Crossfire/Tracer radio as a wireless joystick on Windows — with a live visual app**
 
-[![.NET](https://img.shields.io/badge/.NET-8.0-blue.svg)](https://dotnet.microsoft.com/download/dotnet/8.0)
+[![.NET](https://img.shields.io/badge/.NET-6.0-blue.svg)](https://dotnet.microsoft.com/download/dotnet/6.0)
 [![Platform](https://img.shields.io/badge/Platform-Windows-lightgrey.svg)](https://www.microsoft.com/windows)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
@@ -29,7 +29,8 @@ Both radios use the same "WiFi joystick" protocol (the one VelociDrone Mobile sp
 - 📉 **Accurate metrics** - high-resolution jitter/rate measurement
 - ❓ **Built-in Help** - a Help button with short tutorials for every feature
 - 🪶 **Light & CPU-friendly** - minimize to the system tray to pause the on-screen bars and drop CPU to ~1% (the joystick keeps working); single-instance
-- 📦 **No install** - self-contained single-file `.exe`, runs on any Windows 10/11 PC
+- 📦 **No install** - self-contained single-file `.exe`, runs on Windows 7 SP1 through Windows 11 (64-bit)
+- 🖥️ **DPI-aware** - renders correctly on scaled displays (100/125/150/200%)
 
 ## 🚀 Quick Start
 
@@ -47,7 +48,7 @@ Both radios use the same "WiFi joystick" protocol (the one VelociDrone Mobile sp
 #### Prerequisites
 
 - **vJoy Driver** - Download from [vjoystick.sourceforge.net](http://vjoystick.sourceforge.net/)
-- **.NET 8.0 SDK** - Download from [dotnet.microsoft.com](https://dotnet.microsoft.com/download/dotnet/8.0)
+- **.NET 6.0 SDK** - Download from [dotnet.microsoft.com](https://dotnet.microsoft.com/download/dotnet/6.0)
 
 #### Build Steps
 

@@ -29,13 +29,13 @@ if %ERRORLEVEL% NEQ 0 (
 )
 
 echo Copying vJoy native DLLs to output directory...
-copy "C:\Program Files\vJoy\x64\vJoyInterface.dll" "bin\Release\net8.0-windows\" >nul
-copy "C:\Program Files\vJoy\x64\vJoyInterface.dll" "bin\Debug\net8.0-windows\" >nul
+copy "C:\Program Files\vJoy\x64\vJoyInterface.dll" "bin\Release\net6.0-windows\" >nul
+copy "C:\Program Files\vJoy\x64\vJoyInterface.dll" "bin\Debug\net6.0-windows\" >nul
 
 echo.
 echo Build successful!
 echo Run with: dotnet run
-echo Or use: bin\Release\net8.0-windows\ELRSWifiJoystick.exe
+echo Or use: bin\Release\net6.0-windows\ELRSWifiJoystick.exe
 echo.
 pause
 

@@ -23,8 +23,10 @@ namespace ELRSWifiJoystick
 
         public Color BarColor { get; set; } = Color.FromArgb(0x35, 0xC7, 0x59);
 
+        // Base (96-dpi) widths; scaled by the monitor DPI in Relayout.
         private const int NameW = 108;
         private const int ValueW = 52;
+        private int Sc(int px) => (int)Math.Round(px * DeviceDpi / 96.0);
 
         private readonly int[] _values = new int[8];
         private bool _active;
@@ -75,13 +77,14 @@ namespace ELRSWifiJoystick
         private void Relayout()
         {
             if (Width < 20 || Height < 20) return;
+            int nameW = Sc(NameW), valueW = Sc(ValueW);
             int rowH = Height / 8;
-            int barH = Math.Max(10, Math.Min(28, rowH - 8));
-            int barW = Math.Max(20, Width - NameW - ValueW);
+            int barH = Math.Max(Sc(10), Math.Min(Sc(28), rowH - Sc(8)));
+            int barW = Math.Max(20, Width - nameW - valueW);
             for (int i = 0; i < 8; i++)
             {
                 int cy = i * rowH + (rowH - barH) / 2;
-                _bar[i] = new Rectangle(NameW, cy, barW, barH);
+                _bar[i] = new Rectangle(nameW, cy, barW, barH);
             }
             RebuildBitmaps(barW, barH);
             Invalidate();
@@ -139,7 +142,7 @@ namespace ELRSWifiJoystick
                 // never disagree with what triggered the repaint.
                 int pct = Math.Clamp(_values[i], 0, 32767) * 100 / 32767;
                 string val = _active ? $"{pct}%" : "--";
-                g.DrawString(val, Font, ValueBrush, b.Right + 6, b.Y + (b.Height - Font.Height) / 2f);
+                g.DrawString(val, Font, ValueBrush, b.Right + Sc(6), b.Y + (b.Height - Font.Height) / 2f);
             }
         }
 
@@ -166,15 +169,18 @@ namespace ELRSWifiJoystick
     // Simple dark-themed help dialog with short tutorials for each feature.
     class HelpDialog : Form
     {
+        private int S(int px) => (int)Math.Round(px * DeviceDpi / 96.0);
+
         public HelpDialog(Icon? icon)
         {
+            AutoScaleMode = AutoScaleMode.None;   // all pixel sizes scaled manually via S()
             Text = "Help & Tips";
             if (icon != null) Icon = icon;
             BackColor = Color.FromArgb(28, 30, 34);
             ForeColor = Color.FromArgb(232, 234, 238);
             Font = new Font("Segoe UI", 9.5f);
-            ClientSize = new Size(560, 580);
-            MinimumSize = new Size(460, 400);
+            ClientSize = new Size(S(560), S(580));
+            MinimumSize = new Size(S(460), S(400));
             StartPosition = FormStartPosition.CenterParent;
             MinimizeBox = false;
             MaximizeBox = false;
@@ -192,14 +198,16 @@ namespace ELRSWifiJoystick
             rtb.SelectionStart = 0;
             rtb.ScrollToCaret();
 
-            var pad = new Panel { Dock = DockStyle.Fill, Padding = new Padding(20, 12, 26, 2), BackColor = Color.FromArgb(28, 30, 34) };
+            // Small right padding keeps the scrollbar near the window edge; the text itself
+            // stays clear of the bar via SelectionRightIndent in BuildText.
+            var pad = new Panel { Dock = DockStyle.Fill, Padding = new Padding(S(20), S(12), S(8), S(2)), BackColor = Color.FromArgb(28, 30, 34) };
             pad.Controls.Add(rtb);
             Controls.Add(pad);
 
-            var bottom = new Panel { Dock = DockStyle.Bottom, Height = 40, BackColor = Color.FromArgb(28, 30, 34) };
-            var ok = new Button { Text = "Got it", Size = new Size(100, 30), FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(38, 40, 46), ForeColor = ForeColor, Anchor = AnchorStyles.Right | AnchorStyles.Top };
+            var bottom = new Panel { Dock = DockStyle.Bottom, Height = S(40), BackColor = Color.FromArgb(28, 30, 34) };
+            var ok = new Button { Text = "Got it", Size = new Size(S(100), S(30)), FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(38, 40, 46), ForeColor = ForeColor, Anchor = AnchorStyles.Right | AnchorStyles.Top };
             ok.FlatAppearance.BorderColor = Color.FromArgb(90, 95, 105);
-            ok.Location = new Point(ClientSize.Width - 122, 5);
+            ok.Location = new Point(ClientSize.Width - S(122), S(5));
             ok.Click += (s, e) => Close();
             bottom.Controls.Add(ok);
             Controls.Add(bottom);
@@ -210,20 +218,21 @@ namespace ELRSWifiJoystick
         private static readonly Font HeadingFont = new("Segoe UI Semibold", 11f, FontStyle.Bold);
         private static readonly Font BodyFont = new("Segoe UI", 9.8f);
 
-        private static void BuildText(RichTextBox r)
+        private void BuildText(RichTextBox r)
         {
+            int rightIndent = S(20);   // keep text clear of the scrollbar
             void H(string t)
             {
                 r.SelectionFont = HeadingFont;
                 r.SelectionColor = Color.FromArgb(120, 205, 135);
-                r.SelectionRightIndent = 18;   // keep text clear of the scrollbar
+                r.SelectionRightIndent = rightIndent;
                 r.AppendText(t + "\n");
             }
             void P(string t)
             {
                 r.SelectionFont = BodyFont;
                 r.SelectionColor = Color.FromArgb(205, 210, 216);
-                r.SelectionRightIndent = 18;
+                r.SelectionRightIndent = rightIndent;
                 r.AppendText(t + "\n\n");
             }
 
@@ -295,11 +304,15 @@ namespace ELRSWifiJoystick
             catch { }
         }
 
+        // All pixel sizes are scaled explicitly by the monitor DPI. Fonts are in points and
+        // scale automatically, so WinForms auto-scaling is DISABLED to avoid double/partial
+        // scaling (on 125%+ displays it scaled the window+fonts but not fixed-size children,
+        // clipping buttons and rows).
+        private int S(int px) => (int)Math.Round(px * DeviceDpi / 96.0);
+
         public MainForm(int port, string? txIp)
         {
-            // Scale control layout by DPI so it looks right on scaled displays, and
-            // double-buffer the whole form so resizing is smooth (no flicker).
-            AutoScaleMode = AutoScaleMode.Dpi;
+            AutoScaleMode = AutoScaleMode.None;
             DoubleBuffered = true;
             SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint | ControlStyles.ResizeRedraw, true);
 
@@ -310,8 +323,8 @@ namespace ELRSWifiJoystick
             BackColor = Bg;
             ForeColor = Fg;
             Font = new Font("Segoe UI", 9f);
-            ClientSize = new Size(720, 740);
-            MinimumSize = new Size(640, 600);
+            ClientSize = new Size(S(720), S(740));
+            MinimumSize = new Size(S(640), S(600));
             StartPosition = FormStartPosition.CenterScreen;
             // Load the app's own embedded icon (works in the published single-file too).
             try { appIcon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); Icon = appIcon; } catch { }
@@ -349,20 +362,20 @@ namespace ELRSWifiJoystick
         private void BuildUi(int port, string? txIp)
         {
             // ---- status banner ----
-            statusPanel = new Panel { Dock = DockStyle.Top, Height = 82, BackColor = Color.FromArgb(70, 72, 80), Padding = new Padding(0, 4, 0, 6) };
-            statusLabel = new Label { Text = "Starting...", Font = new Font("Segoe UI Semibold", 15f, FontStyle.Bold), ForeColor = Color.White, AutoSize = false, Dock = DockStyle.Top, Height = 44, TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(16, 0, 8, 0) };
-            statusDetail = new Label { Text = "", ForeColor = Color.FromArgb(232, 232, 232), AutoSize = false, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(18, 0, 8, 2) };
+            statusPanel = new Panel { Dock = DockStyle.Top, Height = S(82), BackColor = Color.FromArgb(70, 72, 80), Padding = new Padding(0, S(4), 0, S(6)) };
+            statusLabel = new Label { Text = "Starting...", Font = new Font("Segoe UI Semibold", 15f, FontStyle.Bold), ForeColor = Color.White, AutoSize = false, Dock = DockStyle.Top, Height = S(44), TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(S(16), 0, S(8), 0) };
+            statusDetail = new Label { Text = "", ForeColor = Color.FromArgb(232, 232, 232), AutoSize = false, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(S(18), 0, S(8), S(2)) };
             statusPanel.Controls.Add(statusDetail);
             statusPanel.Controls.Add(statusLabel);
             Controls.Add(statusPanel);
 
             // ---- main body ----
-            var body = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, Padding = new Padding(12), BackColor = Bg };
-            body.RowStyles.Add(new RowStyle(SizeType.Absolute, 300));  // axes (fixed, compact bars)
-            body.RowStyles.Add(new RowStyle(SizeType.Absolute, 32));  // stats
-            body.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));  // firewall
-            body.RowStyles.Add(new RowStyle(SizeType.Absolute, 52));  // settings
-            body.RowStyles.Add(new RowStyle(SizeType.Percent, 100));  // log (fills remaining space)
+            var body = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, Padding = new Padding(S(12)), BackColor = Bg };
+            body.RowStyles.Add(new RowStyle(SizeType.Absolute, S(300)));  // axes (fixed, compact bars)
+            body.RowStyles.Add(new RowStyle(SizeType.Absolute, S(32)));  // stats
+            body.RowStyles.Add(new RowStyle(SizeType.Absolute, S(34)));  // firewall
+            body.RowStyles.Add(new RowStyle(SizeType.Absolute, S(52)));  // settings
+            body.RowStyles.Add(new RowStyle(SizeType.Percent, 100));     // log (fills remaining space)
             Controls.Add(body);
             body.BringToFront();
 
@@ -382,7 +395,7 @@ namespace ELRSWifiJoystick
 
             // firewall row
             fwLabel = new Label { Text = "Firewall: checking...", ForeColor = Muted, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft };
-            fwButton = MakeButton("Allow in Firewall", 150);
+            fwButton = MakeButton("Allow in Firewall", 160);
             fwButton.Dock = DockStyle.Right;
             fwButton.Click += (s, e) => { FirewallHelper.EnsureAllowed(engine.Port, AppendLog); RefreshFirewall(); };
             var fwRow = new Panel { Dock = DockStyle.Fill, BackColor = Bg };
@@ -392,25 +405,25 @@ namespace ELRSWifiJoystick
 
             // settings row
             var settings = new FlowLayoutPanel { Dock = DockStyle.Fill, BackColor = Bg, WrapContents = false };
-            settings.Controls.Add(new Label { Text = "Port:", ForeColor = Muted, AutoSize = true, Margin = new Padding(0, 13, 4, 0) });
-            portBox = new TextBox { Text = port.ToString(), Width = 62, BackColor = Panel2, ForeColor = Fg, BorderStyle = BorderStyle.FixedSingle, Margin = new Padding(0, 10, 0, 0) };
+            settings.Controls.Add(new Label { Text = "Port:", ForeColor = Muted, AutoSize = true, Margin = new Padding(0, S(13), S(4), 0) });
+            portBox = new TextBox { Text = port.ToString(), Width = S(62), BackColor = Panel2, ForeColor = Fg, BorderStyle = BorderStyle.FixedSingle, Margin = new Padding(0, S(10), 0, 0) };
             // Enter applies the port (the field is only editable while stopped).
             portBox.KeyDown += (s, e) => { if (e.KeyCode == Keys.Enter) { if (!engine.IsRunning) StartEngine(); e.SuppressKeyPress = true; } };
             settings.Controls.Add(portBox);
-            settings.Controls.Add(new Label { Text = "   Module IP:", ForeColor = Muted, AutoSize = true, Margin = new Padding(6, 13, 4, 0) });
-            txBox = new TextBox { Text = txIp ?? "", Width = 128, BackColor = Panel2, ForeColor = Fg, BorderStyle = BorderStyle.FixedSingle, Margin = new Padding(0, 10, 0, 0) };
+            settings.Controls.Add(new Label { Text = "   Module IP:", ForeColor = Muted, AutoSize = true, Margin = new Padding(S(6), S(13), S(4), 0) });
+            txBox = new TextBox { Text = txIp ?? "", Width = S(128), BackColor = Panel2, ForeColor = Fg, BorderStyle = BorderStyle.FixedSingle, Margin = new Padding(0, S(10), 0, 0) };
             txBox.KeyDown += (s, e) => { if (e.KeyCode == Keys.Enter) { Connect(); e.SuppressKeyPress = true; } };
             settings.Controls.Add(txBox);
             var connectButton = MakeButton("Connect", 84);
-            connectButton.Margin = new Padding(10, 9, 0, 0);
+            connectButton.Margin = new Padding(S(10), S(9), 0, 0);
             connectButton.Click += (s, e) => Connect();
             settings.Controls.Add(connectButton);
             startStopButton = MakeButton("Stop", 74);
-            startStopButton.Margin = new Padding(8, 9, 0, 0);
+            startStopButton.Margin = new Padding(S(8), S(9), 0, 0);
             startStopButton.Click += (s, e) => ToggleEngine();
             settings.Controls.Add(startStopButton);
             var helpButton = MakeButton("Help", 68);
-            helpButton.Margin = new Padding(8, 9, 0, 0);
+            helpButton.Margin = new Padding(S(8), S(9), 0, 0);
             helpButton.Click += (s, e) => ShowHelp();
             settings.Controls.Add(helpButton);
             body.Controls.Add(settings, 0, 3);
@@ -574,12 +587,12 @@ namespace ELRSWifiJoystick
             }
         }
 
-        private static Button MakeButton(string text, int width)
+        private Button MakeButton(string text, int width)
         {
             var b = new Button
             {
                 Text = text,
-                Size = new Size(width, 30),
+                Size = new Size(S(width), S(30)),
                 FlatStyle = FlatStyle.Flat,
                 BackColor = Panel2,
                 ForeColor = Fg,
