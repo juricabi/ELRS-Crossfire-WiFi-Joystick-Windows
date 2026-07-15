@@ -2,7 +2,7 @@
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <TargetFramework>net6.0-windows</TargetFramework>
+    <TargetFramework>net8.0-windows</TargetFramework>
     <UseWindowsForms>true</UseWindowsForms>
     <RootNamespace>ELRSWifiJoystick</RootNamespace>
     <ImplicitUsings>enable</ImplicitUsings>
@@ -22,8 +22,8 @@
     <AssemblyName>ELRSWifiJoystick</AssemblyName>
     <AssemblyTitle>ELRS / TBS Crossfire WiFi Joystick</AssemblyTitle>
     <AssemblyDescription>ELRS &amp; TBS Crossfire WiFi Joystick for Windows</AssemblyDescription>
-    <AssemblyVersion>2.0.0.0</AssemblyVersion>
-    <FileVersion>2.0.0.0</FileVersion>
+    <AssemblyVersion>2.0.1.0</AssemblyVersion>
+    <FileVersion>2.0.1.0</FileVersion>
     
     <!-- Application icon -->
     <ApplicationIcon>icons\app.ico</ApplicationIcon>

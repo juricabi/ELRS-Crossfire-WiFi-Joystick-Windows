@@ -11,7 +11,14 @@ namespace ELRSWifiJoystick
     {
         public const string RuleName = "ELRS WiFi Joystick";
 
-        public static bool RuleExists() => RuleExists(RuleName);
+        // Port-specific rule name: the default port keeps the legacy name (existing installs
+        // stay valid, no extra UAC prompt), while a custom port gets its own rule - so
+        // changing the port can't be masked by a rule that only covers 11000.
+        internal static string RuleNameFor(int port)
+            => port == 11000 ? RuleName : $"{RuleName} (UDP {port})";
+
+        public static bool RuleExists(int port) => RuleExists(RuleNameFor(port));
+
 
         internal static bool RuleExists(string ruleName)
         {
@@ -43,7 +50,7 @@ namespace ELRSWifiJoystick
         {
             try
             {
-                if (RuleExists())
+                if (RuleExists(port))
                     return true;
 
                 onLog?.Invoke("Firewall: requesting permission to allow inbound joystick data (UAC prompt)...");
@@ -60,7 +67,7 @@ namespace ELRSWifiJoystick
                     p!.WaitForExit();
                 }
 
-                bool ok = RuleExists();
+                bool ok = RuleExists(port);
                 onLog?.Invoke(ok
                     ? "Firewall: rule added - inbound joystick data is now allowed."
                     : "Firewall: rule not added (permission declined).");
@@ -79,8 +86,9 @@ namespace ELRSWifiJoystick
         {
             try
             {
-                RunNetsh($"advfirewall firewall delete rule name=\"{RuleName}\"");
-                RunNetsh($"advfirewall firewall add rule name=\"{RuleName}\" " +
+                string name = RuleNameFor(port);
+                RunNetsh($"advfirewall firewall delete rule name=\"{name}\"");
+                RunNetsh($"advfirewall firewall add rule name=\"{name}\" " +
                          $"dir=in action=allow protocol=UDP localport={port} profile=any");
             }
             catch { /* best-effort */ }

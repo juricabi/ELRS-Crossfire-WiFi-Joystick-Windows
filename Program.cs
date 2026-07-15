@@ -21,6 +21,12 @@ namespace ELRSWifiJoystick
                 return;
             }
 
+            // Visual/DPI setup must happen before ANY window is created - including the
+            // "already running" MessageBox below.
+            Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
+            Application.EnableVisualStyles();
+            Application.SetCompatibleTextRenderingDefault(false);
+
             // Single instance only - a second copy would fight over UDP port 11000 and the
             // vJoy device. Tell the user instead of failing cryptically.
             using var mutex = new Mutex(true, "ELRSWifiJoystick_SingleInstance", out bool isNew);
@@ -44,11 +50,6 @@ namespace ELRSWifiJoystick
                     listenPort = p;
             }
 
-            // Per-monitor DPI awareness so the UI is crisp (not bitmap-scaled/blurry) on
-            // scaled displays (125/150/200%).
-            Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
-            Application.EnableVisualStyles();
-            Application.SetCompatibleTextRenderingDefault(false);
             Application.Run(new MainForm(listenPort, txIp));
         }
     }

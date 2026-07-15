@@ -6,6 +6,7 @@ using System.Net.Http;
 using System.Net.Sockets;
 using System.Text;
 using System.Threading;
+using System.Threading.Tasks;
 using vJoyInterfaceWrap;
 
 namespace ELRSWifiJoystick
@@ -18,7 +19,8 @@ namespace ELRSWifiJoystick
     class JoystickEngine
     {
         public int Port = 11000;
-        public string? ActivationIP;
+        // volatile: written by the UI thread (SetTarget/Start), read by the engine thread.
+        public volatile string? ActivationIP;
 
         public event Action<string>? Log;
         public event Action<EngineState, string>? StateChanged;   // state, detail (module ip / reason)
@@ -48,10 +50,12 @@ namespace ELRSWifiJoystick
         private Thread? thread;
         private UdpClient? udp;
 
-        private string? boundSource;
+        private volatile string? boundSource;   // also cleared by the UI thread via SetTarget
         private DateTime boundSourceLastData;
         private readonly HashSet<string> warned = new();
         private readonly Dictionary<string, DateTime> lastActivation = new();
+        // Set from an activation task thread, read/cleared on the engine thread.
+        private readonly object activationGate = new();
         private DateTime? firstActivationTime;
         private bool firewallHintShown;
 
@@ -106,7 +110,7 @@ namespace ELRSWifiJoystick
         {
             boundSource = null;
             warned.Clear();
-            firstActivationTime = null;
+            lock (activationGate) firstActivationTime = null;
             firewallHintShown = false;
             arrivalTicks.Clear();
             frameCount = 0;
@@ -267,8 +271,10 @@ namespace ELRSWifiJoystick
             }
 
             // Activated OK but no data -> almost always Windows Firewall. Hint once.
-            if (firstActivationTime != null && boundSource == null && !firewallHintShown
-                && (Clock() - firstActivationTime.Value).TotalSeconds > 4)
+            DateTime? activatedAt;
+            lock (activationGate) activatedAt = firstActivationTime;
+            if (activatedAt != null && boundSource == null && !firewallHintShown
+                && (Clock() - activatedAt.Value).TotalSeconds > 4)
             {
                 firewallHintShown = true;
                 Log?.Invoke("!! Activated OK but NO data arriving - almost always Windows Firewall. Click 'Fix Firewall'.");
@@ -320,7 +326,7 @@ namespace ELRSWifiJoystick
             {
                 boundSource = src;
                 warned.Clear();
-                firstActivationTime = null;
+                lock (activationGate) firstActivationTime = null;
                 firewallHintShown = false;
                 Log?.Invoke($"Joystick source locked to {src}");
                 SetState(EngineState.Streaming, src);
@@ -399,9 +405,26 @@ namespace ELRSWifiJoystick
                     return;
                 lastActivation[ip] = Clock();
             }
-            bool ok = ActivateOverride != null ? ActivateOverride(ip) : StartStreaming(ip);
-            if (ok && firstActivationTime == null)
-                firstActivationTime = Clock();
+
+            if (ActivateOverride != null)
+            {
+                // Test seam stays synchronous so tests remain deterministic.
+                if (ActivateOverride(ip)) MarkActivated();
+                return;
+            }
+
+            // The real HTTP POST runs off-thread: a slow or unreachable module (5s timeout)
+            // must not stall the receive loop, and Stop/exit must not wait on it either.
+            Task.Run(() => { if (StartStreaming(ip)) MarkActivated(); });
+        }
+
+        private void MarkActivated()
+        {
+            lock (activationGate)
+            {
+                if (firstActivationTime == null)
+                    firstActivationTime = Clock();
+            }
         }
 
         private bool StartStreaming(string ip)

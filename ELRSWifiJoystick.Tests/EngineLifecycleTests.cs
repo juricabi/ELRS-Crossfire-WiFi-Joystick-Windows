@@ -118,10 +118,8 @@ public class EngineLifecycleTests
         const int port = 27403;
         using var blocker = new UdpClient(port); // occupy the port first
 
-        var e = NewEngine(port, new List<int[]>(), new List<string>(),
-            error: new ManualResetEventSlim());
         using var error = new ManualResetEventSlim();
-        e.StateChanged += (s, d) => { if (s == EngineState.Error) error.Set(); };
+        var e = NewEngine(port, new List<int[]>(), new List<string>(), error: error);
 
         e.Start();
         try

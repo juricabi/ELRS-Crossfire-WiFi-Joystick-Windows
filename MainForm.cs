@@ -135,7 +135,10 @@ namespace ELRSWifiJoystick
                     g.DrawImageUnscaled(_fillBar, b.X + 1, b.Y + 1);
                     g.ResetClip();
                 }
-                string val = _active ? $"{(int)(v * 100)}%" : "--";
+                // Same integer math as the change detection in SetValues, so the label can
+                // never disagree with what triggered the repaint.
+                int pct = Math.Clamp(_values[i], 0, 32767) * 100 / 32767;
+                string val = _active ? $"{pct}%" : "--";
                 g.DrawString(val, Font, ValueBrush, b.Right + 6, b.Y + (b.Height - Font.Height) / 2f);
             }
         }
@@ -203,18 +206,24 @@ namespace ELRSWifiJoystick
             AcceptButton = ok;
         }
 
+        // Shared fonts (app-lifetime statics; RichTextBox only borrows them per selection).
+        private static readonly Font HeadingFont = new("Segoe UI Semibold", 11f, FontStyle.Bold);
+        private static readonly Font BodyFont = new("Segoe UI", 9.8f);
+
         private static void BuildText(RichTextBox r)
         {
             void H(string t)
             {
-                r.SelectionFont = new Font("Segoe UI Semibold", 11f, FontStyle.Bold);
+                r.SelectionFont = HeadingFont;
                 r.SelectionColor = Color.FromArgb(120, 205, 135);
+                r.SelectionRightIndent = 18;   // keep text clear of the scrollbar
                 r.AppendText(t + "\n");
             }
             void P(string t)
             {
-                r.SelectionFont = new Font("Segoe UI", 9.8f);
+                r.SelectionFont = BodyFont;
                 r.SelectionColor = Color.FromArgb(205, 210, 216);
+                r.SelectionRightIndent = 18;
                 r.AppendText(t + "\n\n");
             }
 
@@ -320,10 +329,9 @@ namespace ELRSWifiJoystick
             Load += (s, e) =>
             {
                 EnableDarkTitleBar();
-                // Make sure inbound joystick data isn't blocked. If our rule is missing, ask
-                // for permission (one UAC prompt) so a tester never hits the "no data" wall.
-                if (!FirewallHelper.RuleExists())
-                    FirewallHelper.EnsureAllowed(engine.Port, AppendLog);
+                // Make sure inbound joystick data isn't blocked. EnsureAllowed returns
+                // immediately if the rule already exists; otherwise it asks once (UAC).
+                FirewallHelper.EnsureAllowed(engine.Port, AppendLog);
                 RefreshFirewall();
                 StartEngine();   // start after the handle exists, so UI marshalling is safe
             };
@@ -386,6 +394,8 @@ namespace ELRSWifiJoystick
             var settings = new FlowLayoutPanel { Dock = DockStyle.Fill, BackColor = Bg, WrapContents = false };
             settings.Controls.Add(new Label { Text = "Port:", ForeColor = Muted, AutoSize = true, Margin = new Padding(0, 13, 4, 0) });
             portBox = new TextBox { Text = port.ToString(), Width = 62, BackColor = Panel2, ForeColor = Fg, BorderStyle = BorderStyle.FixedSingle, Margin = new Padding(0, 10, 0, 0) };
+            // Enter applies the port (the field is only editable while stopped).
+            portBox.KeyDown += (s, e) => { if (e.KeyCode == Keys.Enter) { if (!engine.IsRunning) StartEngine(); e.SuppressKeyPress = true; } };
             settings.Controls.Add(portBox);
             settings.Controls.Add(new Label { Text = "   Module IP:", ForeColor = Muted, AutoSize = true, Margin = new Padding(6, 13, 4, 0) });
             txBox = new TextBox { Text = txIp ?? "", Width = 128, BackColor = Panel2, ForeColor = Fg, BorderStyle = BorderStyle.FixedSingle, Margin = new Padding(0, 10, 0, 0) };
@@ -502,7 +512,7 @@ namespace ELRSWifiJoystick
 
         private void RefreshFirewall()
         {
-            bool ok = FirewallHelper.RuleExists();
+            bool ok = FirewallHelper.RuleExists(engine.Port);
             if (ok)
             {
                 fwLabel.Text = "Firewall: allowed ✓  joystick data can get through";
@@ -564,7 +574,7 @@ namespace ELRSWifiJoystick
             }
         }
 
-        private Button MakeButton(string text, int width)
+        private static Button MakeButton(string text, int width)
         {
             var b = new Button
             {

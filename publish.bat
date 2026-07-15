@@ -1,26 +1,21 @@
 @echo off
-REM Publish as self-contained single-file application
+REM Publish as a self-contained single-file application and zip it for distribution.
 echo Building self-contained single-file package...
-dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o bin\Release\net6.0\win-x64\publish
+dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o bin\Release\net8.0-windows\win-x64\publish
 
 echo.
 echo Done! Self-contained package created at:
-echo bin\Release\net6.0\win-x64\publish\
+echo bin\Release\net8.0-windows\win-x64\publish\
 echo.
 echo Contents:
-echo - ELRSWifiJoystick.exe (main executable)
-echo - vJoyInterface.dll (native driver)
-echo - vJoyInterfaceWrap.dll (wrapper)
-echo - All .NET runtime files (no installation needed)
+echo - ELRSWifiJoystick.exe (single file; .NET runtime and vJoy wrapper embedded)
 echo.
 echo Creating distribution ZIP...
-powershell -Command "Compress-Archive -Path 'bin\Release\net6.0\win-x64\publish\*' -DestinationPath 'ELRSWifiJoystick_v1.1.zip' -Force"
+powershell -Command "Compress-Archive -Path 'bin\Release\net8.0-windows\win-x64\publish\*' -DestinationPath 'ELRSWifiJoystick_v2.0.1.zip' -Force"
 
 echo.
 echo Distribution package created:
-echo - ELRSWifiJoystick_v1.1.zip (~11MB compressed)
-echo - Contains everything needed (no .NET installation required)
-echo - Users only need to install vJoy driver from vjoystick.sourceforge.net
+echo - ELRSWifiJoystick_v2.0.1.zip (~60MB, no .NET installation required)
+echo - Users only need to install the vJoy driver from vjoystick.sourceforge.net
 echo.
 pause
-

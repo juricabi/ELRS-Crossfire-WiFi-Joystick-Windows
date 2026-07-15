@@ -25,6 +25,21 @@ public class MiscTests
     }
 
     [Fact]
+    public void FirewallRuleName_DefaultPort_KeepsLegacyName()
+    {
+        // Existing installs already have this rule - the name must not change for 11000.
+        Assert.Equal("ELRS WiFi Joystick", FirewallHelper.RuleNameFor(11000));
+    }
+
+    [Fact]
+    public void FirewallRuleName_CustomPort_GetsItsOwnRule()
+    {
+        // A rule for the default port must not mask a missing rule for a custom port.
+        Assert.Equal("ELRS WiFi Joystick (UDP 12345)", FirewallHelper.RuleNameFor(12345));
+        Assert.False(FirewallHelper.RuleExists(FirewallHelper.RuleNameFor(48999)));
+    }
+
+    [Fact]
     public void OutputOverride_ReceivesEveryFrame()
     {
         var h = new Harness();
