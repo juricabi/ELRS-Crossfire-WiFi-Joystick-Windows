@@ -277,8 +277,8 @@ namespace ELRSWifiJoystick
                 && (Clock() - activatedAt.Value).TotalSeconds > 4)
             {
                 firewallHintShown = true;
-                Log?.Invoke("!! Activated OK but NO data arriving - almost always Windows Firewall. Click 'Fix Firewall'.");
-                SetState(EngineState.Searching, "activated, but no data (firewall?)");
+                Log?.Invoke("!! Activated OK but NO data arriving - either Windows Firewall (click 'Allow in Firewall') or the module is not connected to a powered radio.");
+                SetState(EngineState.Searching, "activated, but no data (firewall? radio off?)");
             }
 
             if (ActivationIP != null && boundSource == null)
