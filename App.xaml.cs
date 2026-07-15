@@ -1,16 +1,20 @@
 using System;
 using System.Threading;
-using System.Windows.Forms;
+using System.Windows;
 
 namespace ELRSWifiJoystick
 {
-    static class Program
+    public partial class App : Application
     {
-        [STAThread]
-        static void Main(string[] args)
+        private Mutex? singleInstanceMutex;
+
+        protected override void OnStartup(StartupEventArgs e)
         {
+            base.OnStartup(e);
+
             // Elevated helper mode: a UAC-elevated copy of ourselves adds the firewall rule
             // and exits. No UI is shown. Handled first, before anything else.
+            string[] args = e.Args;
             int fwIdx = Array.IndexOf(args, "--add-firewall-rule");
             if (fwIdx >= 0)
             {
@@ -18,23 +22,19 @@ namespace ELRSWifiJoystick
                 if (fwIdx + 1 >= args.Length || !int.TryParse(args[fwIdx + 1], out fwPort) || fwPort <= 0)
                     fwPort = 11000;
                 FirewallHelper.AddRuleWorker(fwPort);
+                Shutdown();
                 return;
             }
 
-            // Visual/DPI setup must happen before ANY window is created - including the
-            // "already running" MessageBox below.
-            Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
-            Application.EnableVisualStyles();
-            Application.SetCompatibleTextRenderingDefault(false);
-
             // Single instance only - a second copy would fight over UDP port 11000 and the
             // vJoy device. Tell the user instead of failing cryptically.
-            using var mutex = new Mutex(true, "ELRSWifiJoystick_SingleInstance", out bool isNew);
+            singleInstanceMutex = new Mutex(true, "ELRSWifiJoystick_SingleInstance", out bool isNew);
             if (!isNew)
             {
                 MessageBox.Show(
                     "ELRS / TBS Crossfire WiFi Joystick is already running.\n\nCheck the system tray (bottom-right).",
-                    "Already running", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    "Already running", MessageBoxButton.OK, MessageBoxImage.Information);
+                Shutdown();
                 return;
             }
 
@@ -50,7 +50,15 @@ namespace ELRSWifiJoystick
                     listenPort = p;
             }
 
-            Application.Run(new MainForm(listenPort, txIp));
+            var window = new MainWindow(listenPort, txIp);
+            MainWindow = window;
+            window.Show();
+        }
+
+        protected override void OnExit(ExitEventArgs e)
+        {
+            singleInstanceMutex?.Dispose();
+            base.OnExit(e);
         }
     }
 }

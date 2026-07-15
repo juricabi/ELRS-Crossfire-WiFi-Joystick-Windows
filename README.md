@@ -16,13 +16,13 @@ This app turns your **ExpressLRS (ELRS)** *or* **TBS Crossfire / Tracer** TX mod
 
 Both radios use the same "WiFi joystick" protocol (the one VelociDrone Mobile speaks), so setup is identical: put the module on your WiFi and run the app. The only difference is the discovery beacon — ELRS announces itself as `ELRS`, Crossfire as `VELOCIDRONE` — and the app handles both automatically.
 
-> **v2.0** is now a full visual app: live axis bars, packet rate + jitter, connection status, and one-click firewall setup. It still auto-discovers your module and just works.
+> **v3.0** is a ground-up WPF interface: vector-rendered, so it is pixel-perfect on **any** display scale (100/125/150/200%), with GPU-composited live axis bars, packet rate + jitter, connection status, and one-click firewall setup. It still auto-discovers your module and just works.
 
 ## ✨ Features
 
 - 🎮 **Virtual joystick** - creates a Windows vJoy device from your radio's WiFi output
 - 📡 **ELRS + Crossfire/Tracer** - full support for the ELRS/Crossfire WiFi joystick protocol (16 channels, 15-bit)
-- 🖥️ **Live visual app** - real-time axis bars (100 fps), packet **rate + jitter**, and connection status at a glance
+- 🖥️ **Live visual app (WPF)** - real-time GPU-composited axis bars, packet **rate + jitter**, and connection status at a glance
 - 🌐 **Auto-discovery** - detects and activates ELRS *and* TBS Crossfire/Tracer modules automatically (or type the IP)
 - 🛡️ **One-click firewall** - detects and adds the required Windows Firewall rule for you (the #1 "no data" cause)
 - 🔒 **Single-source lock** - if two modules are on the network, only one drives the joystick; pick a specific one by IP
@@ -30,7 +30,7 @@ Both radios use the same "WiFi joystick" protocol (the one VelociDrone Mobile sp
 - ❓ **Built-in Help** - a Help button with short tutorials for every feature
 - 🪶 **Light & CPU-friendly** - minimize to the system tray to pause the on-screen bars and drop CPU to ~1% (the joystick keeps working); single-instance
 - 📦 **No install** - self-contained single-file `.exe`, runs on Windows 7 SP1 through Windows 11 (64-bit)
-- 🖥️ **DPI-aware** - renders correctly on scaled displays (100/125/150/200%)
+- 🖥️ **DPI-perfect** - WPF vector rendering: crisp on every display scale (100/125/150/200%), including per-monitor DPI
 
 ## 🚀 Quick Start
 
@@ -90,11 +90,11 @@ Both radios use the same "WiFi joystick" protocol (the one VelociDrone Mobile sp
 
 ### Running the Tests
 
-The engine has a full xUnit test suite (`ELRSWifiJoystick.Tests/`) covering the protocol
-(beacons, channel frames, malformed packets), the source-lock state machine, activation
-throttling, rate/jitter math, and socket-level lifecycle (restart, port-in-use, clean
-shutdown). Tests inject a fake clock/output/activator, so they need neither vJoy nor a
-module:
+The engine and the view model have a full xUnit test suite (`ELRSWifiJoystick.Tests/`)
+covering the protocol (beacons, channel frames, malformed packets), the source-lock state
+machine, activation throttling, rate/jitter math, socket-level lifecycle (restart,
+port-in-use, clean shutdown), and the UI state mapping (banner, axis bars, log capping).
+Tests inject a fake clock/output/activator, so they need neither vJoy nor a module:
 
 ```bash
 dotnet test ELRSWifiJoystick.Tests -c Release

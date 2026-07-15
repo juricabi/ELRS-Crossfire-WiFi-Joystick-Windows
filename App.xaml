@@ -1,0 +1,105 @@
+<Application x:Class="ELRSWifiJoystick.App"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             ShutdownMode="OnMainWindowClose">
+    <Application.Resources>
+
+        <!-- ===== Dark theme palette ===== -->
+        <Color x:Key="BgColor">#FF1C1E22</Color>
+        <SolidColorBrush x:Key="BgBrush" Color="{StaticResource BgColor}" />
+        <SolidColorBrush x:Key="PanelBrush" Color="#FF26282E" />
+        <SolidColorBrush x:Key="TrackBrush" Color="#FF2E3138" />
+        <SolidColorBrush x:Key="BorderBrush2" Color="#FF40444C" />
+        <SolidColorBrush x:Key="FgBrush" Color="#FFE8EAEE" />
+        <SolidColorBrush x:Key="MutedBrush" Color="#FF969BA5" />
+        <SolidColorBrush x:Key="TickBrush" Color="#FF585E68" />
+        <SolidColorBrush x:Key="LogBgBrush" Color="#FF141518" />
+        <SolidColorBrush x:Key="LogFgBrush" Color="#FFB4C8D2" />
+        <SolidColorBrush x:Key="FwOkBrush" Color="#FF78CD87" />
+        <SolidColorBrush x:Key="FwWarnBrush" Color="#FFEBAA41" />
+        <SolidColorBrush x:Key="BannerGreen" Color="#FF2E7D32" />
+        <SolidColorBrush x:Key="BannerOrange" Color="#FFC6801E" />
+        <SolidColorBrush x:Key="BannerRed" Color="#FF962D2D" />
+        <SolidColorBrush x:Key="BannerGray" Color="#FF464850" />
+
+        <LinearGradientBrush x:Key="BarFillBrush" StartPoint="0,0" EndPoint="0,1">
+            <GradientStop Color="#FF6FDD8B" Offset="0" />
+            <GradientStop Color="#FF35C759" Offset="1" />
+        </LinearGradientBrush>
+
+        <!-- ===== Flat dark button ===== -->
+        <Style x:Key="DarkButton" TargetType="Button">
+            <Setter Property="Background" Value="{StaticResource PanelBrush}" />
+            <Setter Property="Foreground" Value="{StaticResource FgBrush}" />
+            <Setter Property="BorderBrush" Value="#FF5A5F69" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Padding" Value="14,5" />
+            <Setter Property="MinHeight" Value="30" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="SnapsToDevicePixels" Value="True" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="bd" Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="3">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"
+                                              Margin="{TemplateBinding Padding}" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="bd" Property="Background" Value="#FF363A42" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="bd" Property="Background" Value="#FF2C3038" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Opacity" Value="0.5" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- ===== Dark text box ===== -->
+        <Style x:Key="DarkTextBox" TargetType="TextBox">
+            <Setter Property="Background" Value="{StaticResource PanelBrush}" />
+            <Setter Property="Foreground" Value="{StaticResource FgBrush}" />
+            <Setter Property="BorderBrush" Value="#FF5A5F69" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CaretBrush" Value="White" />
+            <Setter Property="Padding" Value="4,4" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
+            <Style.Triggers>
+                <Trigger Property="IsEnabled" Value="False">
+                    <Setter Property="Opacity" Value="0.5" />
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+
+        <!-- ===== Axis bar: restyled ProgressBar (PART_Track/PART_Indicator do the math) ===== -->
+        <Style x:Key="AxisBar" TargetType="ProgressBar">
+            <Setter Property="Minimum" Value="0" />
+            <Setter Property="Maximum" Value="32767" />
+            <Setter Property="SnapsToDevicePixels" Value="True" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ProgressBar">
+                        <Grid>
+                            <Border x:Name="PART_Track" Background="{StaticResource TrackBrush}"
+                                    BorderBrush="{StaticResource BorderBrush2}" BorderThickness="1"
+                                    CornerRadius="7" />
+                            <Border x:Name="PART_Indicator" HorizontalAlignment="Left" Margin="1"
+                                    Background="{StaticResource BarFillBrush}" CornerRadius="6" />
+                            <Rectangle Width="1" Fill="{StaticResource TickBrush}"
+                                       HorizontalAlignment="Center" Margin="0,3" />
+                        </Grid>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+    </Application.Resources>
+</Application>

@@ -3,7 +3,8 @@
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net6.0-windows</TargetFramework>
-    <UseWindowsForms>true</UseWindowsForms>
+    <UseWPF>true</UseWPF>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
     <RootNamespace>ELRSWifiJoystick</RootNamespace>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
@@ -22,8 +23,8 @@
     <AssemblyName>ELRSWifiJoystick</AssemblyName>
     <AssemblyTitle>ELRS / TBS Crossfire WiFi Joystick</AssemblyTitle>
     <AssemblyDescription>ELRS &amp; TBS Crossfire WiFi Joystick for Windows</AssemblyDescription>
-    <AssemblyVersion>2.0.1.0</AssemblyVersion>
-    <FileVersion>2.0.1.0</FileVersion>
+    <AssemblyVersion>3.0.0.0</AssemblyVersion>
+    <FileVersion>3.0.0.0</FileVersion>
     
     <!-- Application icon -->
     <ApplicationIcon>icons\app.ico</ApplicationIcon>
@@ -34,7 +35,15 @@
          the default compile glob, and let the test assembly see internal members. -->
     <Compile Remove="ELRSWifiJoystick.Tests\**" />
     <None Remove="ELRSWifiJoystick.Tests\**" />
+    <Page Remove="ELRSWifiJoystick.Tests\**" />
     <InternalsVisibleTo Include="ELRSWifiJoystick.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Window/tray icon as a WPF resource (pack URI) -->
+    <Resource Include="icons\app.ico" />
+    <!-- WPF tray icon support (WPF has no built-in NotifyIcon) -->
+    <PackageReference Include="Hardcodet.NotifyIcon.Wpf" Version="1.1.0" />
   </ItemGroup>
 
   <ItemGroup>

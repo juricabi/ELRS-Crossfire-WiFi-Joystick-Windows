@@ -1,0 +1,66 @@
+<Window x:Class="ELRSWifiJoystick.HelpWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Help &amp; Tips"
+        Width="600" Height="640" MinWidth="480" MinHeight="420"
+        WindowStartupLocation="CenterOwner"
+        Background="{StaticResource BgBrush}"
+        Icon="/icons/app.ico" ShowInTaskbar="False">
+
+    <Window.Resources>
+        <Style x:Key="H" TargetType="Paragraph">
+            <Setter Property="FontFamily" Value="Segoe UI Semibold" />
+            <Setter Property="FontSize" Value="16" />
+            <Setter Property="FontWeight" Value="Bold" />
+            <Setter Property="Foreground" Value="#FF78CD87" />
+            <Setter Property="Margin" Value="0,14,0,4" />
+        </Style>
+        <Style x:Key="P" TargetType="Paragraph">
+            <Setter Property="FontSize" Value="13.5" />
+            <Setter Property="Foreground" Value="#FFCDD2D8" />
+            <Setter Property="Margin" Value="0,0,0,6" />
+        </Style>
+    </Window.Resources>
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <FlowDocumentScrollViewer Grid.Row="0" Margin="10,6,4,0"
+                                  VerticalScrollBarVisibility="Auto"
+                                  IsToolBarVisible="False" Zoom="100">
+            <FlowDocument FontFamily="Segoe UI" PagePadding="10,8,14,8"
+                          Background="{StaticResource BgBrush}">
+                <Paragraph Style="{StaticResource H}">What this does</Paragraph>
+                <Paragraph Style="{StaticResource P}">Turns your ExpressLRS or TBS Crossfire/Tracer radio's WiFi output into a virtual joystick (vJoy), so you can fly sims like VelociDrone or Liftoff wirelessly - no cables.</Paragraph>
+
+                <Paragraph Style="{StaticResource H}">Getting started</Paragraph>
+                <Paragraph Style="{StaticResource P}">1. Install the vJoy driver (once).<LineBreak />2. Put your TX module on the SAME WiFi network as this PC.<LineBreak />3. The banner turns green "Connected" and the bars move.<LineBreak />4. In your sim, pick "vJoy Device" as the controller and calibrate.</Paragraph>
+
+                <Paragraph Style="{StaticResource H}">Status banner</Paragraph>
+                <Paragraph Style="{StaticResource P}">Orange = searching for a module.  Green = connected &amp; streaming.  Red = a problem (e.g. vJoy not installed).</Paragraph>
+
+                <Paragraph Style="{StaticResource H}">Axis bars, Rate &amp; Jitter</Paragraph>
+                <Paragraph Style="{StaticResource P}">The bars show your live stick and switch positions. Rate is packets per second (~90-100 Hz is normal). Jitter is how steady the timing is - lower is smoother.</Paragraph>
+
+                <Paragraph Style="{StaticResource H}">Module IP &amp; Connect</Paragraph>
+                <Paragraph Style="{StaticResource P}">Leave Module IP blank to auto-discover. To target a specific module (handy if two are on the network), type its IP and press Connect - only that module will drive the joystick.</Paragraph>
+
+                <Paragraph Style="{StaticResource H}">Fix Firewall</Paragraph>
+                <Paragraph Style="{StaticResource P}">Windows Firewall blocks incoming joystick data by default. The app adds the rule for you - just accept the one-time Windows permission prompt. If a "firewall is blocking" button appears, click it.</Paragraph>
+
+                <Paragraph Style="{StaticResource H}">Minimize for better performance</Paragraph>
+                <Paragraph Style="{StaticResource P}">Minimizing to the system tray PAUSES the on-screen bars and drops CPU use to nearly zero - the joystick keeps working perfectly in your sim. Recommended while flying.</Paragraph>
+
+                <Paragraph Style="{StaticResource H}">Good to know</Paragraph>
+                <Paragraph Style="{StaticResource P}">The module keeps broadcasting until it is powered off (there is no remote stop) - closing the app only stops reading the data. The app runs as a single instance and minimizes to the tray.</Paragraph>
+            </FlowDocument>
+        </FlowDocumentScrollViewer>
+
+        <Button Grid.Row="1" Content="Got it" Style="{StaticResource DarkButton}"
+                HorizontalAlignment="Right" Margin="0,8,16,12" MinWidth="100"
+                IsDefault="True" Click="Ok_Click" />
+    </Grid>
+</Window>
