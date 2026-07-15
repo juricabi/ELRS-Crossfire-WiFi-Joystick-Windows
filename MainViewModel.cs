@@ -4,6 +4,7 @@ using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
 using System.Text;
+using System.Threading.Tasks;
 
 namespace ELRSWifiJoystick
 {
@@ -130,18 +131,18 @@ namespace ELRSWifiJoystick
 
         // ---- lifecycle -------------------------------------------------------------------
 
-        // Called once by the view after the window is up: firewall check (may show a one-time
-        // UAC prompt) and engine start.
+        // Called once by the view after the window is up. The engine starts immediately;
+        // firewall work runs on a background thread so the first render never waits on
+        // netsh or a UAC prompt.
         public void Initialize()
         {
-            FirewallHelper.EnsureAllowed(Engine.Port, msg => ui(() => AppendLog(msg)));
-            RefreshFirewall();
-            StartEngine();
+            StartEngine(refreshFirewall: false);
+            EnsureFirewallAsync();
         }
 
         public void Shutdown() => Engine.StopAndWait(700);
 
-        private void StartEngine()
+        private void StartEngine(bool refreshFirewall = true)
         {
             if (!int.TryParse(PortText.Trim(), out int p) || p <= 0 || p >= 65536)
             {
@@ -152,6 +153,8 @@ namespace ELRSWifiJoystick
             Engine.ActivationIP = string.IsNullOrWhiteSpace(ModuleIp) ? null : ModuleIp.Trim();
             Engine.Start();
             IsRunning = true;
+            // The rule is per-port, so a custom port needs its own indicator state.
+            if (refreshFirewall) RefreshFirewallAsync();
         }
 
         private void ToggleEngine()
@@ -177,13 +180,44 @@ namespace ELRSWifiJoystick
                 Engine.SetTarget(string.IsNullOrWhiteSpace(ModuleIp) ? null : ModuleIp.Trim());
         }
 
-        private void FixFirewall()
+        private void FixFirewall() => EnsureFirewallAsync();
+
+        // Both helpers run netsh off the UI thread. Entered only from the UI thread, so a
+        // plain bool suffices to keep one UAC prompt / check in flight at a time.
+        private bool firewallBusy;
+
+        // Passive: update the indicator for the current port (no UAC).
+        private void RefreshFirewallAsync()
         {
-            FirewallHelper.EnsureAllowed(Engine.Port, msg => ui(() => AppendLog(msg)));
-            RefreshFirewall();
+            if (firewallBusy) return;
+            int port = Engine.Port;
+            Task.Run(() =>
+            {
+                bool ok = FirewallHelper.RuleExists(port);
+                ui(() => FirewallOk = ok);
+            });
         }
 
-        public void RefreshFirewall() => FirewallOk = FirewallHelper.RuleExists(Engine.Port);
+        // Active: add the rule if missing (one UAC prompt at most), then re-check.
+        private void EnsureFirewallAsync()
+        {
+            if (firewallBusy) return;
+            firewallBusy = true;
+            int port = Engine.Port;
+            Task.Run(() =>
+            {
+                try
+                {
+                    FirewallHelper.EnsureAllowed(port, msg => ui(() => AppendLog(msg)));
+                    bool ok = FirewallHelper.RuleExists(port);
+                    ui(() => { FirewallOk = ok; firewallBusy = false; });
+                }
+                catch (Exception ex)
+                {
+                    ui(() => { AppendLog("Firewall check failed: " + ex.Message); firewallBusy = false; });
+                }
+            });
+        }
 
         // ---- engine events ---------------------------------------------------------------
 

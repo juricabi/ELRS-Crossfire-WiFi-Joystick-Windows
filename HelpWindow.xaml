@@ -32,6 +32,7 @@
                                   VerticalScrollBarVisibility="Auto"
                                   IsToolBarVisible="False" Zoom="100">
             <FlowDocument FontFamily="Segoe UI" PagePadding="10,8,14,8"
+                          TextAlignment="Left"
                           Background="{StaticResource BgBrush}">
                 <Paragraph Style="{StaticResource H}">What this does</Paragraph>
                 <Paragraph Style="{StaticResource P}">Turns your ExpressLRS or TBS Crossfire/Tracer radio's WiFi output into a virtual joystick (vJoy), so you can fly sims like VelociDrone or Liftoff wirelessly - no cables.</Paragraph>

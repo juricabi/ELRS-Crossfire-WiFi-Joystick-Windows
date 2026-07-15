@@ -12,6 +12,17 @@ namespace ELRSWifiJoystick
         {
             base.OnStartup(e);
 
+            // A silent vanish is the worst failure mode for testers. Surface UI-thread
+            // exceptions and keep running - the engine thread has its own handling, so
+            // the joystick stream survives a cosmetic UI hiccup.
+            DispatcherUnhandledException += (s, ex) =>
+            {
+                ex.Handled = true;
+                MessageBox.Show(
+                    "Unexpected error:\n\n" + ex.Exception.Message,
+                    "ELRS / Crossfire WiFi Joystick", MessageBoxButton.OK, MessageBoxImage.Error);
+            };
+
             // Elevated helper mode: a UAC-elevated copy of ourselves adds the firewall rule
             // and exits. No UI is shown. Handled first, before anything else.
             string[] args = e.Args;
@@ -57,6 +68,7 @@ namespace ELRSWifiJoystick
 
         protected override void OnExit(ExitEventArgs e)
         {
+            try { singleInstanceMutex?.ReleaseMutex(); } catch { /* not owned (second instance) */ }
             singleInstanceMutex?.Dispose();
             base.OnExit(e);
         }
