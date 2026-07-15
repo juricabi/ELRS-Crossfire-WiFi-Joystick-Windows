@@ -1,5 +1,5 @@
 @echo off
-echo Building ExpressLRS WiFi Joystick for Windows...
+echo Building ELRS / TBS Crossfire WiFi Joystick for Windows...
 echo.
 
 if not exist "lib\vJoyInterfaceWrap.dll" (
@@ -11,10 +11,10 @@ if not exist "lib\vJoyInterfaceWrap.dll" (
     exit /b 1
 )
 
-if not exist "C:\Program Files\vJoy\x64\vJoyInterface.dll" (
-    echo ERROR: vJoyInterface.dll not found in vJoy installation
-    echo Please ensure vJoy is properly installed from:
-    echo    http://vjoystick.sourceforge.net/
+if not exist "lib\vJoyInterface.dll" (
+    echo ERROR: vJoyInterface.dll not found in lib\ folder
+    echo Please copy it from your vJoy installation:
+    echo    C:\Program Files\vJoy\x64\vJoyInterface.dll
     echo.
     pause
     exit /b 1
@@ -28,14 +28,8 @@ if %ERRORLEVEL% NEQ 0 (
     exit /b 1
 )
 
-echo Copying vJoy native DLLs to output directory...
-copy "C:\Program Files\vJoy\x64\vJoyInterface.dll" "bin\Release\net6.0-windows\" >nul
-copy "C:\Program Files\vJoy\x64\vJoyInterface.dll" "bin\Debug\net6.0-windows\" >nul
-
 echo.
 echo Build successful!
-echo Run with: dotnet run
-echo Or use: bin\Release\net6.0-windows\ELRSWifiJoystick.exe
+echo Run: bin\Release\net6.0-windows\win-x64\ELRSWifiJoystick.exe
 echo.
 pause
-
