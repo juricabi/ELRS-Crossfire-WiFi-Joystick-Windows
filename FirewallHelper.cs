@@ -25,10 +25,11 @@ namespace ELRSWifiJoystick
                     CreateNoWindow = true,
                 };
                 using var p = Process.Start(psi);
-                string output = p!.StandardOutput.ReadToEnd();
+                p!.StandardOutput.ReadToEnd(); // drain so netsh can't block on a full pipe
                 p.WaitForExit();
-                // netsh prints "No rules match the specified criteria." when the rule is absent.
-                return !output.Contains("No rules match");
+                // Use the exit code (0 = rule found, 1 = no match): netsh's text output is
+                // localized, so string matching breaks on non-English Windows.
+                return p.ExitCode == 0;
             }
             catch
             {

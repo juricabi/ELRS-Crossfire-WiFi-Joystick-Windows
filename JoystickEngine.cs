@@ -157,16 +157,32 @@ namespace ELRSWifiJoystick
                 Log?.Invoke($"Using vJoy device {deviceId}");
             }
 
-            try
+            // Bind with a short retry: a just-stopped previous run can hold the port for a
+            // moment longer (e.g. its thread was inside a blocking activation POST when the
+            // user hit Stop, so Start()'s bounded Join returned before the socket closed).
+            Exception? bindError = null;
+            for (int attempt = 0; attempt < 5 && running; attempt++)
             {
-                udp = new UdpClient();
-                udp.Client.Bind(new IPEndPoint(IPAddress.Any, Port));
-                udp.Client.ReceiveTimeout = 100;
+                try
+                {
+                    udp = new UdpClient();
+                    udp.Client.Bind(new IPEndPoint(IPAddress.Any, Port));
+                    udp.Client.ReceiveTimeout = 100;
+                    bindError = null;
+                    break;
+                }
+                catch (Exception ex)
+                {
+                    bindError = ex;
+                    try { udp?.Close(); } catch { }
+                    udp = null;
+                    Thread.Sleep(300);
+                }
             }
-            catch (Exception ex)
+            if (udp == null)
             {
                 Log?.Invoke($"ERROR: cannot listen on UDP port {Port} - it may already be in use " +
-                            $"(another instance, or another app on this port). {ex.Message}");
+                            $"(another instance, or another app on this port). {bindError?.Message}");
                 SetState(EngineState.Error, $"UDP port {Port} in use");
                 Cleanup();
                 running = false;
