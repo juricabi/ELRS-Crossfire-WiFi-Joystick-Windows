@@ -66,6 +66,10 @@
       <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
       <Link>vJoyInterface.dll</Link>
     </Content>
+    <!-- The wrapper is listed twice (Reference + Content), which crashes the R2R
+         compiler with a duplicate CompilationEntry; a tiny interop DLL gains
+         nothing from R2R anyway. -->
+    <PublishReadyToRunExclude Include="vJoyInterfaceWrap.dll" />
   </ItemGroup>
 
 </Project>
