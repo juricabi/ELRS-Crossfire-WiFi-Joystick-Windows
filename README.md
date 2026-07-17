@@ -30,7 +30,7 @@ Both radios use the same "WiFi joystick" protocol (the one VelociDrone Mobile sp
 - ❓ **Built-in Help** - a Help button with short tutorials for every feature
 - 🪶 **Light & CPU-friendly** - minimize to the system tray to pause the on-screen bars and drop CPU to ~1% (the joystick keeps working); single-instance
 - 📦 **No install** - self-contained single-file `.exe`, runs on Windows 7 SP1 through Windows 11 (64-bit)
-- ⌨️ **CLI edition too** - `ELRSWifiJoystickCli.exe` (~9 MB, instant start): the same engine and features in a console app - live channel readout, stats, firewall handling, `--tx`, plus interactive keys while running (`s` start/stop, `t` module IP/connect, `f` firewall, `q` quit; also scriptable via stdin)
+- ⌨️ **CLI edition too** - `ELRSWifiJoystickCli.exe` (~9 MB, instant start): the same engine and features in a console app - live channel readout, stats, firewall handling, `--tx`, plus interactive keys while running (`s` start/stop, `t` module IP/connect, `p` port, `f` firewall, `q` quit; also scriptable via stdin)
 - 🖥️ **DPI-perfect** - WPF vector rendering: crisp on every display scale (100/125/150/200%), including per-monitor DPI
 
 ## 🚀 Quick Start
