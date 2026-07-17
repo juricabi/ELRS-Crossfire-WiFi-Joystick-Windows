@@ -36,6 +36,9 @@
     <Compile Remove="ELRSWifiJoystick.Tests\**" />
     <None Remove="ELRSWifiJoystick.Tests\**" />
     <Page Remove="ELRSWifiJoystick.Tests\**" />
+    <Compile Remove="ELRSWifiJoystick.Cli\**" />
+    <None Remove="ELRSWifiJoystick.Cli\**" />
+    <Page Remove="ELRSWifiJoystick.Cli\**" />
     <InternalsVisibleTo Include="ELRSWifiJoystick.Tests" />
   </ItemGroup>
 

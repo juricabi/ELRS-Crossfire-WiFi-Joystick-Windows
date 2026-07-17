@@ -1,0 +1,51 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net6.0-windows</TargetFramework>
+    <AssemblyName>ELRSWifiJoystickCli</AssemblyName>
+    <RootNamespace>ELRSWifiJoystick</RootNamespace>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <PlatformTarget>x64</PlatformTarget>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <!-- No WPF/WinForms here, so trimming IS supported: ~6 MB instead of 66 MB. -->
+    <PublishTrimmed>true</PublishTrimmed>
+    <TrimMode>partial</TrimMode>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <AssemblyTitle>ELRS / TBS Crossfire WiFi Joystick (CLI)</AssemblyTitle>
+    <AssemblyVersion>3.0.0.0</AssemblyVersion>
+    <FileVersion>3.0.0.0</FileVersion>
+    <ApplicationIcon>..\icons\app.ico</ApplicationIcon>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- The exact same engine sources the GUI uses - no fork, no drift. -->
+    <Compile Include="..\JoystickEngine.cs" Link="JoystickEngine.cs" />
+    <Compile Include="..\FirewallHelper.cs" Link="FirewallHelper.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="vJoyInterfaceWrap">
+      <HintPath>..\lib\vJoyInterfaceWrap.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <!-- Keep the trimmer's hands off the interop wrapper. -->
+    <TrimmerRootAssembly Include="vJoyInterfaceWrap" />
+    <Content Include="..\lib\vJoyInterfaceWrap.dll">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+      <Link>vJoyInterfaceWrap.dll</Link>
+    </Content>
+    <Content Include="..\lib\vJoyInterface.dll">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+      <Link>vJoyInterface.dll</Link>
+    </Content>
+  </ItemGroup>
+
+</Project>

@@ -30,6 +30,7 @@ Both radios use the same "WiFi joystick" protocol (the one VelociDrone Mobile sp
 - ❓ **Built-in Help** - a Help button with short tutorials for every feature
 - 🪶 **Light & CPU-friendly** - minimize to the system tray to pause the on-screen bars and drop CPU to ~1% (the joystick keeps working); single-instance
 - 📦 **No install** - self-contained single-file `.exe`, runs on Windows 7 SP1 through Windows 11 (64-bit)
+- ⌨️ **CLI edition too** - `ELRSWifiJoystickCli.exe` (~9 MB, instant start): the same engine and features in a console app - live channel readout, stats, firewall handling, `--tx`, all of it
 - 🖥️ **DPI-perfect** - WPF vector rendering: crisp on every display scale (100/125/150/200%), including per-monitor DPI
 
 ## 🚀 Quick Start
@@ -83,7 +84,8 @@ Both radios use the same "WiFi joystick" protocol (the one VelociDrone Mobile sp
 | Script | Purpose | Output | Use Case |
 |--------|---------|--------|----------|
 | `build.bat` | Development build | Multiple files (DLLs, runtime, etc.) | Testing, debugging, development |
-| `publish.bat` | Production build | Single executable + ZIP distribution | Distribution, deployment |
+| `publish.bat` | Production build (GUI) | Single executable + ZIP distribution | Distribution, deployment |
+| `publish-cli.bat` | Production build (CLI) | Trimmed ~9 MB console exe + ZIP | Lightweight/headless use |
 
 **build.bat** creates a development build with separate files, making it easier to debug and modify.  
 **publish.bat** creates a single-file executable perfect for distribution to end users.
