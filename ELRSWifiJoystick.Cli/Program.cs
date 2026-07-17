@@ -59,7 +59,7 @@ namespace ELRSWifiJoystick
             WriteLine(ConsoleColor.Gray, "  Features : auto-discovery (ELRS + Crossfire/Tracer) | single-source lock");
             WriteLine(ConsoleColor.Gray, "             vJoy output ~90-100 Hz | rate & jitter stats | firewall auto-rule");
             WriteLine(ConsoleColor.Gray, "             auto-reconnect when the module drops and comes back");
-            WriteLine(ConsoleColor.Gray, "  Keys     : [s] start/stop  [t] module IP / connect  [f] firewall  [q] quit");
+            WriteLine(ConsoleColor.Gray, "  Keys     : [s] start/stop  [t] module IP / connect  [p] port  [f] firewall  [q] quit");
             WriteLine(ConsoleColor.DarkGray, "  Ctrl+C also quits. --help for command-line options.");
 
             var engine = new JoystickEngine { Port = port, ActivationIP = txIp };
@@ -104,6 +104,7 @@ namespace ELRSWifiJoystick
                             case "q": case "quit": quit.Set(); return;
                             case "s": ToggleEngine(engine); break;
                             case "t": SetTargetCmd(engine, parts.Length > 1 ? parts[1] : null); break;
+                            case "p": SetPortCmd(engine, parts.Length > 1 ? parts[1] : null); break;
                             case "f": FixFirewall(engine); break;
                             case "": break;
                             default: Log($"Unknown command: {line.Trim()}"); break;
@@ -122,6 +123,7 @@ namespace ELRSWifiJoystick
                     if (k == 'q') quit.Set();
                     else if (k == 's') ToggleEngine(engine);
                     else if (k == 't') PromptTarget(engine);
+                    else if (k == 'p') PromptPort(engine);
                     else if (k == 'f') FixFirewall(engine);
                 }
             }
@@ -171,6 +173,45 @@ namespace ELRSWifiJoystick
                 engine.ActivationIP = ip;
                 engine.Start();
             }
+        }
+
+        // 'p' - mirror of the GUI Port box: editable only while stopped, and applying
+        // it starts the engine (like pressing Enter in the box).
+        private static void PromptPort(JoystickEngine engine)
+        {
+            if (engine.IsRunning)
+            {
+                Log("Stop first ('s') - the port can only be changed while stopped.");
+                return;
+            }
+            ClearStatusLine();
+            lock (gate)
+            {
+                Console.ForegroundColor = ConsoleColor.Cyan;
+                Console.Write("UDP port (1-65535): ");
+                Console.ResetColor();
+            }
+            SetPortCmd(engine, Console.ReadLine());
+        }
+
+        private static void SetPortCmd(JoystickEngine engine, string? text)
+        {
+            if (engine.IsRunning)
+            {
+                Log("Stop first ('s') - the port can only be changed while stopped.");
+                return;
+            }
+            if (!int.TryParse(text?.Trim(), out int p) || p <= 0 || p >= 65536)
+            {
+                Log($"Invalid port \"{text?.Trim()}\" - use 1-65535.");
+                return;
+            }
+            engine.Port = p;
+            Log($"Port set to {p}.");
+            // The firewall rule is per-port, same as the GUI's indicator refresh.
+            if (!FirewallHelper.RuleExists(p))
+                Log("Firewall: no rule for this port yet - press 'f' to add it.", ConsoleColor.Yellow);
+            engine.Start();
         }
 
         // 'f' - mirror of the GUI "Allow in Firewall" button.
@@ -275,6 +316,7 @@ Usage: ELRSWifiJoystickCli [port] [--tx <module-ip>] [--no-firewall]
 While running (keys on a console, or lines on redirected stdin):
   s               Start / stop
   t [ip]          Set module IP and connect (empty = auto-discover)
+  p [port]        Change the UDP port (only while stopped; applying starts)
   f               Re-check / add the firewall rule
   q               Quit
 
