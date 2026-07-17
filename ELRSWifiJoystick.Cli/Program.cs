@@ -56,7 +56,11 @@ namespace ELRSWifiJoystick
             try { Console.Title = "ELRS / TBS Crossfire WiFi Joystick (CLI)"; } catch { }
 
             WriteLine(ConsoleColor.Cyan, $"ELRS / TBS Crossfire WiFi Joystick CLI v3.0  -  listening on UDP {port}");
-            WriteLine(ConsoleColor.DarkGray, "Ctrl+C quits. Run with --help for options.");
+            WriteLine(ConsoleColor.Gray, "  Features : auto-discovery (ELRS + Crossfire/Tracer) | single-source lock");
+            WriteLine(ConsoleColor.Gray, "             vJoy output ~90-100 Hz | rate & jitter stats | firewall auto-rule");
+            WriteLine(ConsoleColor.Gray, "             auto-reconnect when the module drops and comes back");
+            WriteLine(ConsoleColor.Gray, "  Keys     : [s] start/stop  [t] module IP / connect  [f] firewall  [q] quit");
+            WriteLine(ConsoleColor.DarkGray, "  Ctrl+C also quits. --help for command-line options.");
 
             var engine = new JoystickEngine { Port = port, ActivationIP = txIp };
             engine.Log += msg => Log(msg);
@@ -84,14 +88,99 @@ namespace ELRSWifiJoystick
 
             engine.Start();
 
+            // Same commands two ways: single keys on an interactive console, or lines on
+            // a redirected stdin ("s" / "t <ip>" / "f" / "q") so the CLI is scriptable.
+            bool keys = !Console.IsInputRedirected;
+            if (!keys)
+            {
+                new Thread(() =>
+                {
+                    string? line;
+                    while ((line = Console.In.ReadLine()) != null)
+                    {
+                        var parts = line.Trim().Split(' ', 2);
+                        switch (parts[0].ToLowerInvariant())
+                        {
+                            case "q": case "quit": quit.Set(); return;
+                            case "s": ToggleEngine(engine); break;
+                            case "t": SetTargetCmd(engine, parts.Length > 1 ? parts[1] : null); break;
+                            case "f": FixFirewall(engine); break;
+                            case "": break;
+                            default: Log($"Unknown command: {line.Trim()}"); break;
+                        }
+                    }
+                }) { IsBackground = true }.Start();
+            }
+
             // Interactive: live status line at 5 Hz. Redirected: a stats line every 2 s.
             while (!quit.Wait(live ? 200 : 2000))
+            {
                 DrawStatus();
+                while (keys && Console.KeyAvailable)
+                {
+                    char k = char.ToLowerInvariant(Console.ReadKey(intercept: true).KeyChar);
+                    if (k == 'q') quit.Set();
+                    else if (k == 's') ToggleEngine(engine);
+                    else if (k == 't') PromptTarget(engine);
+                    else if (k == 'f') FixFirewall(engine);
+                }
+            }
 
             ClearStatusLine();
             Log("Stopping... (the module keeps broadcasting until powered off)");
             engine.StopAndWait(700);
             return 0;
+        }
+
+        // 's' - mirror of the GUI Start/Stop button, including its "stop clears the
+        // forced target" behaviour so the next start is a clean auto-discover.
+        private static void ToggleEngine(JoystickEngine engine)
+        {
+            if (engine.IsRunning)
+            {
+                engine.Stop();
+                engine.ActivationIP = null;
+                Log("Stopped. Press 's' to start again (auto-discover) or 't' to target a module IP.");
+            }
+            else
+            {
+                engine.Start();
+            }
+        }
+
+        // 't' - mirror of the GUI Module IP box + Connect button.
+        private static void PromptTarget(JoystickEngine engine)
+        {
+            ClearStatusLine();
+            lock (gate)
+            {
+                Console.ForegroundColor = ConsoleColor.Cyan;
+                Console.Write("Module IP (empty = auto-discover): ");
+                Console.ResetColor();
+            }
+            SetTargetCmd(engine, Console.ReadLine());
+        }
+
+        private static void SetTargetCmd(JoystickEngine engine, string? ip)
+        {
+            ip = string.IsNullOrWhiteSpace(ip) ? null : ip.Trim();
+            if (engine.IsRunning)
+                engine.SetTarget(ip);
+            else
+            {
+                engine.ActivationIP = ip;
+                engine.Start();
+            }
+        }
+
+        // 'f' - mirror of the GUI "Allow in Firewall" button.
+        private static void FixFirewall(JoystickEngine engine)
+        {
+            FirewallHelper.EnsureAllowed(engine.Port, m => Log(m));
+            bool ok = FirewallHelper.RuleExists(engine.Port);
+            Log(ok ? "Firewall: allowed - joystick data can get through."
+                   : "Firewall: rule still missing - data may be blocked.",
+                ok ? ConsoleColor.Green : ConsoleColor.Yellow);
         }
 
         private static string StatusText()
@@ -182,6 +271,12 @@ Usage: ELRSWifiJoystickCli [port] [--tx <module-ip>] [--no-firewall]
                   for its discovery beacon (aliases: --crossfire, --activate)
   --no-firewall   Skip the Windows Firewall check/rule
   --help          This help
+
+While running (keys on a console, or lines on redirected stdin):
+  s               Start / stop
+  t [ip]          Set module IP and connect (empty = auto-discover)
+  f               Re-check / add the firewall rule
+  q               Quit
 
 Requires the vJoy driver (vjoystick.sourceforge.net). Put the ELRS or TBS
 Crossfire/Tracer module on the same WiFi network as this PC, then pick the
