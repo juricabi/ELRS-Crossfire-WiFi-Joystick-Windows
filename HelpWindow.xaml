@@ -20,6 +20,10 @@
             <Setter Property="Foreground" Value="#FFCDD2D8" />
             <Setter Property="Margin" Value="0,0,0,6" />
         </Style>
+        <!-- Warning heading: amber instead of green, for the firmware gotcha. -->
+        <Style x:Key="HW" TargetType="Paragraph" BasedOn="{StaticResource H}">
+            <Setter Property="Foreground" Value="#FFE0A33A" />
+        </Style>
     </Window.Resources>
 
     <Grid>
@@ -39,6 +43,11 @@
 
                 <Paragraph Style="{StaticResource H}">Getting started</Paragraph>
                 <Paragraph Style="{StaticResource P}">1. Install the vJoy driver (once).<LineBreak />2. Put your TX module on the SAME WiFi network as this PC.<LineBreak />3. The banner turns green "Connected" and the bars move.<LineBreak />4. In your sim, pick "vJoy Device" as the controller and calibrate.</Paragraph>
+
+                <Paragraph Style="{StaticResource HW}">Crossfire firmware - check this first</Paragraph>
+                <Paragraph Style="{StaticResource P}">Some TBS firmware versions break the WiFi joystick completely. The module still streams normally, but it never sends any stick data - so the axes never move. This hits every app the same way, including TBS's own VelociDrone Mobile, and nothing on the PC side can work around it.</Paragraph>
+                <Paragraph Style="{StaticResource P}"><Bold>Crossfire TX:</Bold> use 6.31 or 6.36 - BROKEN on 6.42, 6.48 beta and 6.48 public.<LineBreak /><Bold>WiFi module:</Bold> use v2.17 up to v3.10 (v2.25 recommended) - BROKEN on v3.20.</Paragraph>
+                <Paragraph Style="{StaticResource P}">If the status says <Italic>"module found, but it is sending no stick data"</Italic>, this is why - downgrade with TBS Agent. The TX and WiFi-module firmwares are updated separately.</Paragraph>
 
                 <Paragraph Style="{StaticResource H}">Status banner</Paragraph>
                 <Paragraph Style="{StaticResource P}">Orange = searching for a module.  Green = connected &amp; streaming.  Red = a problem (e.g. vJoy not installed).</Paragraph>
