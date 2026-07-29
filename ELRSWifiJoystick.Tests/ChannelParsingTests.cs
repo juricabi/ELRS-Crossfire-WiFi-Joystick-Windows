@@ -79,6 +79,54 @@ public class ChannelParsingTests
         Assert.Equal(new[] { 32767, 32767, 100, 32767 }, Assert.Single(h.Applied));
     }
 
+    // A module the radio isn't feeding streams 16x 0xF26A. Clamping that to 32767 used to
+    // show every axis at 100% - and hand the simulator full throttle.
+    [Fact]
+    public void AllPlaceholderFrame_IsNotAJoystickSource()
+    {
+        var h = new Harness();
+        h.Packet(Frames.Channels(Enumerable.Repeat(0xF26A, 16).ToArray()));
+
+        Assert.Empty(h.Applied);
+        Assert.Empty(h.ChannelEvents);
+        Assert.Equal(0, h.StreamingCount);
+        Assert.Null(h.Engine.Source);           // must not take the source lock
+        Assert.Contains(h.Log, l => l.Contains("no stick data"));
+    }
+
+    [Fact]
+    public void AllPlaceholderFrame_WarnsOnce_NotPerFrame()
+    {
+        var h = new Harness();
+        var frame = Frames.Channels(Enumerable.Repeat(0xF26A, 16).ToArray());
+        for (int i = 0; i < 50; i++) h.Packet(frame);
+
+        Assert.Single(h.Log, l => l.Contains("no stick data"));
+    }
+
+    [Fact]
+    public void RealStickData_StillLocksAndStreams_AfterPlaceholders()
+    {
+        var h = new Harness();
+        h.Packet(Frames.Channels(Enumerable.Repeat(0xF26A, 16).ToArray()));
+        h.Packet(Frames.Channels(16384, 16384, 0, 16384));
+
+        Assert.Equal(new[] { 16384, 16384, 0, 16384 }, Assert.Single(h.Applied));
+        Assert.Equal(EngineState.Streaming, h.States[^1].State);
+    }
+
+    [Fact]
+    public void PartlyOutOfRangeFrame_IsStillRealStickData()
+    {
+        // Only an all-placeholder frame means "no data" - one clamped channel must not
+        // suppress the other seven.
+        var h = new Harness();
+        h.Packet(Frames.Channels(0xF26A, 1000, 2000, 3000));
+
+        Assert.Equal(new[] { 32767, 1000, 2000, 3000 }, Assert.Single(h.Applied));
+        Assert.Equal(EngineState.Streaming, h.States[^1].State);
+    }
+
     [Fact]
     public void FrameTypeByte_IsNotValidated()
     {

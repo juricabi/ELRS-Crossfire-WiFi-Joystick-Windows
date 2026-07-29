@@ -10,8 +10,11 @@ SETUP
 2. Run  ELRSWifiJoystick.exe
    - Accept the one-time Windows permission (UAC) prompt - this adds the
      firewall rule so the joystick data can get through.
-3. Put your ELRS / Crossfire module on the SAME WiFi network as this PC
-   (Crossfire needs WiFi-module firmware v2.17+, v2.25 recommended).
+3. Put your ELRS / Crossfire module on the SAME WiFi network as this PC.
+   CROSSFIRE FIRMWARE - some TBS versions break this feature completely
+   (no stick data reaches ANY app, including VelociDrone Mobile):
+       Crossfire TX : use 6.31 or 6.36   - BROKEN on 6.42 and 6.48
+       WiFi module  : use v2.17 to v3.10 - BROKEN on v3.20  (v2.25 recommended)
    - The banner turns GREEN "Connected - streaming" and the axis bars move.
    - Or type the module's IP into "Module IP" and click Connect.
 4. In your simulator, select "vJoy Device" as the controller and calibrate.

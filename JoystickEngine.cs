@@ -52,6 +52,7 @@ namespace ELRSWifiJoystick
 
         private volatile string? boundSource;   // also cleared by the UI thread via SetTarget
         private DateTime boundSourceLastData;
+        private readonly HashSet<string> noStickData = new();
         private readonly HashSet<string> warned = new();
         private readonly Dictionary<string, DateTime> lastActivation = new();
         // Set from an activation task thread, read/cleared on the engine thread.
@@ -110,6 +111,7 @@ namespace ELRSWifiJoystick
         {
             boundSource = null;
             warned.Clear();
+            noStickData.Clear();
             lock (activationGate) firstActivationTime = null;
             firewallHintShown = false;
             arrivalTicks.Clear();
@@ -271,9 +273,12 @@ namespace ELRSWifiJoystick
             }
 
             // Activated OK but no data -> almost always Windows Firewall. Hint once.
+            // Not if frames are arriving without stick data: that has its own explanation
+            // and the firewall is demonstrably fine.
             DateTime? activatedAt;
             lock (activationGate) activatedAt = firstActivationTime;
             if (activatedAt != null && boundSource == null && !firewallHintShown
+                && noStickData.Count == 0
                 && (Clock() - activatedAt.Value).TotalSeconds > 4)
             {
                 firewallHintShown = true;
@@ -312,6 +317,22 @@ namespace ELRSWifiJoystick
             // If a specific module was chosen (Module IP / Connect), accept ONLY that one, so a
             // different module that's still broadcasting can't steal or hold the lock.
             if (ActivationIP != null && src != ActivationIP) return;
+
+            int[] ch = new int[count];
+            int outOfRange = 0;
+            for (int i = 0; i < count; i++)
+            {
+                int v = data[2 + i * 2] | (data[2 + i * 2 + 1] << 8);
+                // Defensive clamp to the 15-bit protocol range.
+                if (v > 32767) { outOfRange++; v = 32767; }
+                ch[i] = v;
+            }
+            // A module the radio isn't feeding still streams at full rate, but every channel is
+            // an out-of-range placeholder (Crossfire sends 0xF26A = 62058 on all 16). That is
+            // not channel data, so it must not lock the source or reach vJoy: clamping it into
+            // range would peg every axis at 100% and hand the simulator full throttle.
+            if (outOfRange == count) { WarnNoStickData(src); return; }
+
             if (boundSource != null && boundSource != src)
             {
                 if ((Clock() - boundSourceLastData).TotalSeconds > SOURCE_TIMEOUT_SEC)
@@ -326,6 +347,7 @@ namespace ELRSWifiJoystick
             {
                 boundSource = src;
                 warned.Clear();
+                noStickData.Clear();
                 lock (activationGate) firstActivationTime = null;
                 firewallHintShown = false;
                 Log?.Invoke($"Joystick source locked to {src}");
@@ -333,20 +355,22 @@ namespace ELRSWifiJoystick
             }
             boundSourceLastData = Clock();
 
-            int[] ch = new int[count];
-            for (int i = 0; i < count; i++)
-            {
-                int v = data[2 + i * 2] | (data[2 + i * 2 + 1] << 8);
-                // Defensive clamp to the 15-bit protocol range: a radio-less Crossfire module
-                // was observed idling at 0xF26A (62058), which would overflow the vJoy axis.
-                ch[i] = v > 32767 ? 32767 : v;
-            }
-
             Apply(ch);
             ChannelsUpdated?.Invoke(ch);
 
             frameCount++;
             arrivalTicks.Add(Stopwatch.GetTimestamp());
+        }
+
+        // Warn once per source, not ~90x/sec. The usual cause is a known TBS firmware
+        // regression, so point at the fix instead of leaving the user hunting a network fault.
+        private void WarnNoStickData(string src)
+        {
+            if (!noStickData.Add(src)) return;
+            Log?.Invoke($"!! {src} is streaming, but every channel is a placeholder - no stick data. " +
+                        "Crossfire TX firmware 6.42/6.48 and WiFi firmware 3.20 have this regression: " +
+                        "use XF 6.31 or 6.36, and WiFi firmware up to 3.10.");
+            SetState(EngineState.Searching, "module found, but it is sending no stick data");
         }
 
         // Test hook: inject a synthetic arrival timestamp (Stopwatch ticks) for stats tests.

@@ -120,11 +120,20 @@ dotnet test ELRSWifiJoystick.Tests -c Release
 
 ### TBS Crossfire / Tracer Setup
 
-Setup is the same as ELRS — the module just needs to be on the same WiFi network. This
-uses the "Velocidrone Mobile" support built into the TBS WiFi module (WiFi-module firmware
-**v2.17 or later**). **Recommended: WiFi-module firmware v2.25.49mb** — the most stable
-build for the Crossfire WiFi joystick. (Any v2.17+ works; the app was also verified
-against v3.10.)
+Setup is the same as ELRS — the module just needs to be on the same WiFi network. This uses
+the "Velocidrone Mobile" support built into the TBS WiFi module.
+
+> ### 🛑 Check your firmware first
+>
+> | Component | Works | Broken |
+> |-----------|-------|--------|
+> | **Crossfire TX (XF)** | **6.31**, **6.36** | **6.42 public, 6.48 beta, 6.48 public** |
+> | **WiFi module** | **v2.17** up to **v3.10** (v2.25.49mb recommended) | **v3.20** |
+>
+> On a broken version the module streams normally but **never sends stick data** — this app,
+> VelociDrone Mobile, and every other client see the same dead stream, and nothing on the PC
+> side can fix it. Details and source:
+> [firmware compatibility](#-crossfire-firmware-compatibility-important).
 
 1. **Connect to WiFi**:
    - Enable WiFi on the Crossfire/Tracer TX (WiFi module powered).
@@ -206,9 +215,33 @@ The application maps ExpressLRS channels to vJoy axes:
 | "vJoy Device 1 is already owned" | Close other applications using vJoy device #1 |
 | "Waiting for joystick data..." | Ensure the TX module is connected to WiFi; for Crossfire, wait for the `VELOCIDRONE` beacon or pass `--tx <module-ip>` |
 | No joystick input in simulator | Verify vJoy device is enabled and simulator recognizes "vJoy Device" |
-| Crossfire not detected | Confirm the module is on the same network (ping its IP); WiFi-module firmware must be **v2.17+**. Try `--tx <ip>` to activate directly |
+| Crossfire not detected | Confirm the module is on the same network (ping its IP); check the [firmware versions](#-crossfire-firmware-compatibility-important) below. Try `--tx <ip>` to activate directly |
 | Crossfire axes look wrong/half-throw | Channels are passed through as 15-bit like ELRS. If your radio's output differs, recalibrate the axes in the simulator |
 | **Connected but no data / axes don't move** | **Windows Firewall is blocking the incoming UDP stream.** The app adds a rule automatically (accept the one-time UAC prompt); if you declined it, click **Fix Firewall** in the app. |
+| **"module found, but it is sending no stick data"** | Unsupported Crossfire firmware — see [firmware compatibility](#-crossfire-firmware-compatibility-important) |
+
+### 🛑 Crossfire firmware compatibility (important)
+
+**Some TBS firmware versions break the WiFi joystick feature entirely.** The module still
+streams frames at full rate, but they never contain stick data — every channel holds a frozen
+placeholder (`0xF26A` = 62058 on all 16). This affects **every** client identically, including
+TBS's own reference client VelociDrone Mobile, so no PC-side software can work around it.
+
+| Component | Works | Broken |
+|-----------|-------|--------|
+| **Crossfire TX (XF)** | **6.31**, **6.36** | **6.42 public, 6.48 beta, 6.48 public** |
+| **WiFi module** | **v2.17** up to **v3.10** | **v3.20** |
+
+VelociDrone's developers confirmed the TX regression and reported it to TBS — see
+[TBS firmware breaks VelociDrone mobile wi-fi support](https://batcavegames.freshdesk.com/support/solutions/articles/16000225491).
+Downgrade with TBS Agent (desktop or Agent Lite on the radio); the TX and WiFi-module firmwares
+are updated separately.
+
+**How this app behaves on an affected version:** a placeholder frame isn't channel data, so it
+never takes the source lock and never reaches vJoy. The status stays *Searching* with the
+detail *"module found, but it is sending no stick data"*, and the log names the firmware fix
+once. The values are deliberately **not** clamped into range — that would show every axis at
+100% and hand your simulator full throttle.
 
 ### ⚠️ Most common issue: "activated OK but no data" = Firewall
 
@@ -257,6 +290,11 @@ netsh advfirewall firewall add rule name="ELRS WiFi Joystick" dir=in action=allo
   - Byte 1: Channel count (4-16; Crossfire always sends 16)
   - Bytes 2+: Channel data (16-bit little-endian per channel)
 - **Value Range**: 0-32767 (15-bit precision)
+- **No-data frames**: on an unsupported firmware the module still streams at full rate, with
+  every channel set to an out-of-range placeholder (`0xF26A` on Crossfire). A frame whose
+  channels are *all* out of range is not treated as channel data at all — it never takes the
+  source lock and never reaches vJoy. A frame with only some out of range is clamped and
+  passed through as usual.
 - **Update Rate**: ~90-100 Hz typical
 - **Single-source lock**: the app binds to the first module that streams real channel data
   and ignores any other source until the bound one is silent for 3 s, so two radios on the
