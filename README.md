@@ -290,11 +290,14 @@ netsh advfirewall firewall add rule name="ELRS WiFi Joystick" dir=in action=allo
   - Byte 1: Channel count (4-16; Crossfire always sends 16)
   - Bytes 2+: Channel data (16-bit little-endian per channel)
 - **Value Range**: 0-32767 (15-bit precision)
-- **No-data frames**: on an unsupported firmware the module still streams at full rate, with
-  every channel set to an out-of-range placeholder (`0xF26A` on Crossfire). A frame whose
-  channels are *all* out of range is not treated as channel data at all — it never takes the
-  source lock and never reaches vJoy. A frame with only some out of range is clamped and
-  passed through as usual.
+- **No-data / corrupt frames**: a channel with no data holds the placeholder `0xF26A` (62058) —
+  a value a real channel can never reach. All 16 channels sit at it while the module has no
+  input (unsupported firmware, radio off), and under fast stick movement the module
+  occasionally emits a corrupt frame mixing placeholders with garbage. Any frame containing
+  the placeholder is dropped — it never takes the source lock and never reaches vJoy
+  (mid-stream, the last good values are held for the ~11 ms gap). Values slightly above 32767
+  *without* the placeholder are legitimate stick overshoot past a wide endpoint and are
+  clamped to full deflection.
 - **Update Rate**: ~90-100 Hz typical
 - **Single-source lock**: the app binds to the first module that streams real channel data
   and ignores any other source until the bound one is silent for 3 s, so two radios on the

@@ -8,11 +8,11 @@ echo Done! Self-contained package created at:
 echo bin\Release\net6.0-windows\win-x64\publish\
 echo.
 echo Creating distribution ZIP (exe + QUICKSTART, no debug symbols)...
-powershell -Command "Compress-Archive -Path 'bin\Release\net6.0-windows\win-x64\publish\ELRSWifiJoystick.exe','docs\QUICKSTART.txt' -DestinationPath 'ELRSWifiJoystick_v3.0.zip' -Force"
+powershell -Command "Compress-Archive -Path 'bin\Release\net6.0-windows\win-x64\publish\ELRSWifiJoystick.exe','docs\QUICKSTART.txt' -DestinationPath 'ELRSWifiJoystick_v3.1.zip' -Force"
 
 echo.
 echo Distribution package created:
-echo - ELRSWifiJoystick_v3.0.zip (~60MB, no .NET installation required)
+echo - ELRSWifiJoystick_v3.1.zip (~60MB, no .NET installation required)
 echo - Users only need to install the vJoy driver from vjoystick.sourceforge.net
 echo.
 pause

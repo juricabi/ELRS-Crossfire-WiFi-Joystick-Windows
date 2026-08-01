@@ -30,6 +30,8 @@ namespace ELRSWifiJoystick
         private static readonly byte[] ELRS_BEACON = Encoding.ASCII.GetBytes("ELRS");
         private static readonly byte[] XF_BEACON = Encoding.ASCII.GetBytes("VELOCIDRONE");
         internal const double SOURCE_TIMEOUT_SEC = 3.0;
+        // What a Crossfire module puts in a channel it has no data for (62058).
+        internal const int XF_PLACEHOLDER = 0xF26A;
 
         // One shared HttpClient for the whole app (creating one per request can exhaust sockets).
         private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(5) };
@@ -320,18 +322,31 @@ namespace ELRSWifiJoystick
 
             int[] ch = new int[count];
             int outOfRange = 0;
+            bool placeholder = false;
             for (int i = 0; i < count; i++)
             {
                 int v = data[2 + i * 2] | (data[2 + i * 2 + 1] << 8);
-                // Defensive clamp to the 15-bit protocol range.
+                if (v == XF_PLACEHOLDER) placeholder = true;
+                // Clamp slight overshoot to the 15-bit protocol range: a stick pushed past a
+                // wide endpoint legitimately reads a little above 32767 (observed up to 0x816B).
                 if (v > 32767) { outOfRange++; v = 32767; }
                 ch[i] = v;
             }
-            // A module the radio isn't feeding still streams at full rate, but every channel is
-            // an out-of-range placeholder (Crossfire sends 0xF26A = 62058 on all 16). That is
-            // not channel data, so it must not lock the source or reach vJoy: clamping it into
-            // range would peg every axis at 100% and hand the simulator full throttle.
-            if (outOfRange == count) { WarnNoStickData(src); return; }
+            // Frames carrying the 0xF26A placeholder hold no stick data - a real channel can
+            // never reach 62058. All 16 channels sit at it while the module has no input
+            // (unsupported TBS firmware, radio off), and under fast stick movement the module
+            // occasionally emits a corrupt frame mixing placeholders with garbage (observed
+            // live: 5 identical such frames in 1791). Applying one would spike axes to 100%
+            // for a frame, so drop it: mid-stream vJoy simply holds the last good values for
+            // ~11 ms. The all-out-of-range check stays as a backstop for other idle patterns.
+            if (placeholder || outOfRange == count)
+            {
+                // The receive loop only runs Tick() on socket timeouts, and a placeholder
+                // flood keeps the socket busy - release a stale lock from here instead.
+                Tick();
+                if (boundSource == null) WarnNoStickData(src);
+                return;
+            }
 
             if (boundSource != null && boundSource != src)
             {
@@ -367,9 +382,9 @@ namespace ELRSWifiJoystick
         private void WarnNoStickData(string src)
         {
             if (!noStickData.Add(src)) return;
-            Log?.Invoke($"!! {src} is streaming, but every channel is a placeholder - no stick data. " +
-                        "Crossfire TX firmware 6.42/6.48 and WiFi firmware 3.20 have this regression: " +
-                        "use XF 6.31 or 6.36, and WiFi firmware up to 3.10.");
+            Log?.Invoke($"!! {src} is streaming placeholder frames - no stick data. Either the radio " +
+                        "is not feeding the module right now, or the firmware has the known regression " +
+                        "(XF 6.42/6.48, WiFi 3.20 - use XF 6.31 or 6.36, WiFi up to 3.10).");
             SetState(EngineState.Searching, "module found, but it is sending no stick data");
         }
 

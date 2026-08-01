@@ -73,9 +73,10 @@ public class ChannelParsingTests
     [Fact]
     public void ClampsOverrangeValues_To15BitMax()
     {
-        // A radio-less Crossfire module idles at 0xF26A (62058) - must not overflow vJoy.
+        // Overshoot values must not overflow the vJoy axis. (0xF26A itself is the
+        // no-data placeholder and marks the whole frame as corrupt - tested separately.)
         var h = new Harness();
-        h.Packet(Frames.Channels(0xF26A, 0xFFFF, 100, 32767));
+        h.Packet(Frames.Channels(0x816B, 0xFFFF, 100, 32767));
         Assert.Equal(new[] { 32767, 32767, 100, 32767 }, Assert.Single(h.Applied));
     }
 
@@ -116,15 +117,51 @@ public class ChannelParsingTests
     }
 
     [Fact]
-    public void PartlyOutOfRangeFrame_IsStillRealStickData()
+    public void OvershootFrame_IsClampedAndApplied()
     {
-        // Only an all-placeholder frame means "no data" - one clamped channel must not
-        // suppress the other seven.
+        // A stick pushed past a wide endpoint reads slightly above 32767 (0x816B = 33131
+        // observed live) - that is real stick data, clamped to full deflection.
         var h = new Harness();
-        h.Packet(Frames.Channels(0xF26A, 1000, 2000, 3000));
+        h.Packet(Frames.Channels(0x816B, 1000, 2000, 3000));
 
         Assert.Equal(new[] { 32767, 1000, 2000, 3000 }, Assert.Single(h.Applied));
         Assert.Equal(EngineState.Streaming, h.States[^1].State);
+    }
+
+    [Fact]
+    public void CorruptFrame_MidStream_IsDroppedSilently()
+    {
+        // Under fast stick movement the module occasionally emits a corrupt frame mixing
+        // the 0xF26A placeholder with garbage (captured live). Applying it would spike
+        // axes to 100% for a frame; warning would spam; changing state would flip the UI
+        // to "Searching" while streaming is actually fine.
+        var h = new Harness();
+        h.Packet(Frames.Channels(1000, 2000, 3000, 4000));
+        var statesBefore = h.States.Count;
+        var logBefore = h.Log.Count;
+
+        h.Packet(Frames.Channels(62058, 62058, 62058, 56051, 556, 35904, 212, 11347));
+
+        Assert.Single(h.Applied);                       // corrupt frame never reached vJoy
+        Assert.Equal(statesBefore, h.States.Count);     // no state flicker
+        Assert.Equal(logBefore, h.Log.Count);           // no log spam
+        Assert.Equal(EngineState.Streaming, h.States[^1].State);
+    }
+
+    [Fact]
+    public void PlaceholderFlood_ReleasesLock_ThenWarns()
+    {
+        // If the radio stops feeding the module mid-stream, the module keeps streaming
+        // placeholders at ~90 Hz - the socket never times out, so the stale-lock release
+        // must happen from the receive path.
+        var h = new Harness();
+        h.Packet(Frames.Channels(1000, 2000, 3000, 4000));
+        h.Clock.Advance(JoystickEngine.SOURCE_TIMEOUT_SEC + 0.1);
+        h.Packet(Frames.Channels(Enumerable.Repeat(0xF26A, 16).ToArray()));
+
+        Assert.Null(h.Engine.Source);
+        Assert.Equal(EngineState.Searching, h.States[^1].State);
+        Assert.Contains(h.Log, l => l.Contains("no stick data"));
     }
 
     [Fact]

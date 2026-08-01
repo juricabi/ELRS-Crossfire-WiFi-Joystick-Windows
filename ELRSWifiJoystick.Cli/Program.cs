@@ -55,7 +55,7 @@ namespace ELRSWifiJoystick
             live = !Console.IsOutputRedirected;
             try { Console.Title = "ELRS / TBS Crossfire WiFi Joystick (CLI)"; } catch { }
 
-            WriteLine(ConsoleColor.Cyan, $"ELRS / TBS Crossfire WiFi Joystick CLI v3.0  -  listening on UDP {port}");
+            WriteLine(ConsoleColor.Cyan, $"ELRS / TBS Crossfire WiFi Joystick CLI v3.1  -  listening on UDP {port}");
             WriteLine(ConsoleColor.Gray, "  Features : auto-discovery (ELRS + Crossfire/Tracer) | single-source lock");
             WriteLine(ConsoleColor.Gray, "             vJoy output ~90-100 Hz | rate & jitter stats | firewall auto-rule");
             WriteLine(ConsoleColor.Gray, "             auto-reconnect when the module drops and comes back");
