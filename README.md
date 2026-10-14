@@ -315,6 +315,12 @@ netsh advfirewall firewall add rule name="ELRS WiFi Joystick" dir=in action=allo
 - **Processing**: Direct pass-through of values for minimal latency
 - **Filtering**: No smoothing or filtering applied (raw input for precise control)
 
+## ☕ Support
+
+If it saves you a cable, you can buy me a coffee:
+
+[![Support me on Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/juricabi)
+
 ## 📄 License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
@@ -345,7 +351,7 @@ When reporting issues, please include:
 
 **Made with ❤️ for the ExpressLRS community**
 
-[⭐ Star this repository](../../stargazers) if you find it helpful!
+[⭐ Star this repository](../../stargazers) if you find it helpful! · [☕ Buy me a coffee](https://ko-fi.com/juricabi)
 
 </div>
 
