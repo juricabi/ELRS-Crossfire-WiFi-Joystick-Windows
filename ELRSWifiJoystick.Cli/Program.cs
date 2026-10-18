@@ -95,8 +95,13 @@ namespace ELRSWifiJoystick
             {
                 new Thread(() =>
                 {
+                    // Console.In with BOM detection added: a writer that sends a UTF-8 BOM
+                    // (PowerShell 5.1 / .NET Framework StandardInput) would otherwise garble
+                    // the first command, so "q" arrived as an unknown command.
+                    using var input = new StreamReader(Console.OpenStandardInput(), Console.InputEncoding,
+                                                       detectEncodingFromByteOrderMarks: true);
                     string? line;
-                    while ((line = Console.In.ReadLine()) != null)
+                    while ((line = input.ReadLine()) != null)
                     {
                         var parts = line.Trim().Split(' ', 2);
                         switch (parts[0].ToLowerInvariant())
