@@ -1,4 +1,4 @@
-﻿ELRS / TBS Crossfire WiFi Joystick for Windows  -  v3.0
+﻿ELRS / TBS Crossfire WiFi Joystick for Windows  -  v3.2
 =========================================================
 
 Use your ExpressLRS or TBS Crossfire/Tracer radio as a wireless joystick on
@@ -6,7 +6,8 @@ Windows (VelociDrone, Liftoff, DRL, ...) - no cables.
 
 SETUP
 -----
-1. Install vJoy (once):   http://vjoystick.sourceforge.net/
+1. Install vJoy (once):   http://vjoystick.sourceforge.net/  (2.1.9.1)
+      or 2.2.x from       https://github.com/BrunnerInnovation/vJoy/releases
 2. Run  ELRSWifiJoystick.exe
    - Accept the one-time Windows permission (UAC) prompt - this adds the
      firewall rule so the joystick data can get through.

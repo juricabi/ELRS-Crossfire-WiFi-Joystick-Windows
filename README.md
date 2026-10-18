@@ -38,7 +38,7 @@ Both radios use the same "WiFi joystick" protocol (the one VelociDrone Mobile sp
 ### Option 1: Download Pre-built Release (Recommended)
 
 1. **Download** the latest release from the [Releases page](../../releases)
-2. **Install vJoy** from [vjoystick.sourceforge.net](http://vjoystick.sourceforge.net/)
+2. **Install vJoy** - [2.1.9.1](http://vjoystick.sourceforge.net/) or [2.2.x](https://github.com/BrunnerInnovation/vJoy/releases) - both work
 3. **Extract** the ZIP file and run `ELRSWifiJoystick.exe`
 4. **Connect** your ELRS TX module to WiFi
 
@@ -48,7 +48,7 @@ Both radios use the same "WiFi joystick" protocol (the one VelociDrone Mobile sp
 
 #### Prerequisites
 
-- **vJoy Driver** - Download from [vjoystick.sourceforge.net](http://vjoystick.sourceforge.net/)
+- **vJoy Driver** - [2.1.9.1](http://vjoystick.sourceforge.net/) or [2.2.x](https://github.com/BrunnerInnovation/vJoy/releases) - both work
 - **.NET 6.0 SDK** - Download from [dotnet.microsoft.com](https://dotnet.microsoft.com/download/dotnet/6.0)
 
 #### Build Steps
@@ -56,8 +56,10 @@ Both radios use the same "WiFi joystick" protocol (the one VelociDrone Mobile sp
 1. **Clone** this repository
 
 2. **Setup vJoy Libraries**
-   - Install vJoy from the official website
-   - Copy `vJoyInterfaceWrap.dll` from `C:\Program Files\vJoy\x64\` to the `lib\` folder
+   - Install vJoy (see above)
+   - Copy `vJoyInterfaceWrap.dll` and `vJoyInterface.dll` from `C:\Program Files\vJoy\x64\` to the `lib\` folder
+   - The bundled `vJoyInterface.dll` is only a fallback: at runtime the app loads the one from the user's
+     vJoy install, so it always matches their driver whichever vJoy version you built with
 
 3. **Build the Application**
    
@@ -106,7 +108,7 @@ dotnet test ELRSWifiJoystick.Tests -c Release
 
 ### vJoy Setup
 
-1. Install vJoy from [vjoystick.sourceforge.net](http://vjoystick.sourceforge.net/)
+1. Install vJoy - [2.1.9.1](http://vjoystick.sourceforge.net/) or [2.2.x](https://github.com/BrunnerInnovation/vJoy/releases) - both work
 
 ### ExpressLRS TX Module Setup
 
@@ -273,7 +275,11 @@ netsh advfirewall firewall add rule name="ELRS WiFi Joystick" dir=in action=allo
 
 ### vJoy Issues
 
-- **Installation**: Download vJoy from the official website
+- **Installation**: vJoy 2.1.9.1 ([SourceForge](http://vjoystick.sourceforge.net/)) and 2.2.x
+  ([BrunnerInnovation](https://github.com/BrunnerInnovation/vJoy/releases)) both work
+- **Version match**: `vJoyInterface.dll` must match the driver, so the app loads the one from your vJoy
+  install (`x64\` folder) rather than its own copy. The log shows `vJoy driver X, DLL Y (path)` and warns
+  on a mismatch - reinstall vJoy if it does
 - **Permissions**: Run as administrator if vJoy access is denied
 
 ## 📊 Technical Details
@@ -311,7 +317,8 @@ netsh advfirewall firewall add rule name="ELRS WiFi Joystick" dir=in action=allo
 - **Network**: ~1KB/s bandwidth usage
 
 ### vJoy Integration
-- **Library**: vJoyInterfaceWrap.dll for Windows virtual joystick creation
+- **Library**: vJoyInterfaceWrap.dll for Windows virtual joystick creation; the native
+  vJoyInterface.dll is loaded from the vJoy install so it matches the driver (2.1.9 - 2.2.x)
 - **Axes**: Supports up to 8 axes per vJoy device
 - **Processing**: Direct pass-through of values for minimal latency
 - **Filtering**: No smoothing or filtering applied (raw input for precise control)
