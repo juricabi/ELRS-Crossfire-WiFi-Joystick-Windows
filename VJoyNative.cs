@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Threading;
@@ -17,55 +18,88 @@ namespace ELRSWifiJoystick
     static class VJoyNative
     {
         private const string DllName = "vJoyInterface.dll";
-        // vJoy's Inno Setup uninstall key; InstallLocation points at e.g. C:\Program Files\vJoy\
+        // vJoy's Inno Setup uninstall key - the same AppId for 2.1.9 and the 2.2.x forks. All
+        // of them install in 64-bit mode, always copy the DLL to {app}\x64 and record that
+        // folder as DllX64Location; Inno itself writes InstallLocation (C:\Program Files\vJoy\).
         private const string UninstallKey =
             @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{8E31F76F-74C3-47F1-9550-E041EEDC5FBB}_is1";
 
         private static int registered;
+        // Probed once: the runtime asks again on the first call of every vJoy P/Invoke.
+        private static readonly Lazy<IntPtr> Installed = new(LoadInstalled);
 
         // Full path of the installed DLL in use, or null when the bundled copy was loaded.
         public static string? LoadedFrom { get; private set; }
+        // Why an installed DLL that exists could not be loaded, when none could.
+        public static string? LoadError { get; private set; }
 
         // Must run before the first vJoy call (the resolver only affects later loads).
         public static void Register()
         {
             if (Interlocked.Exchange(ref registered, 1) == 1) return;
-            NativeLibrary.SetDllImportResolver(typeof(vJoy).Assembly, Resolve);
+            // Best effort: if this ever fails, the bundled DLL loads exactly as before.
+            try { NativeLibrary.SetDllImportResolver(typeof(vJoy).Assembly, Resolve); }
+            catch { }
         }
 
         // 0x222 -> "2.2.2" (vJoy packs major.minor.build into one nibble each)
         public static string FormatVersion(uint v) => $"{(v >> 8) & 0xF}.{(v >> 4) & 0xF}.{v & 0xF}";
 
-        private static IntPtr Resolve(string name, Assembly assembly, DllImportSearchPath? searchPath)
-        {
-            if (!name.Equals(DllName, StringComparison.OrdinalIgnoreCase)
-                && !name.Equals(Path.GetFileNameWithoutExtension(DllName), StringComparison.OrdinalIgnoreCase))
-                return IntPtr.Zero;
+        internal static bool IsVJoyInterface(string libraryName) =>
+            libraryName.Equals(DllName, StringComparison.OrdinalIgnoreCase)
+            || libraryName.Equals(Path.GetFileNameWithoutExtension(DllName), StringComparison.OrdinalIgnoreCase);
 
-            foreach (string path in InstalledCandidates())
+        // IntPtr.Zero -> default probing, i.e. the copy bundled with the app.
+        private static IntPtr Resolve(string name, Assembly assembly, DllImportSearchPath? searchPath) =>
+            IsVJoyInterface(name) ? Installed.Value : IntPtr.Zero;
+
+        private static IntPtr LoadInstalled()
+        {
+            RegistryKey? key = null;
+            try { key = Registry.LocalMachine.OpenSubKey(UninstallKey); } catch { }
+            using (key)
             {
-                if (File.Exists(path) && NativeLibrary.TryLoad(path, out IntPtr handle))
+                string? Read(string name)
                 {
-                    LoadedFrom = path;
-                    return handle;
+                    try { return key?.GetValue(name) as string; } catch { return null; }
                 }
+                var found = Probe(
+                    Candidates(Read, Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles)),
+                    File.Exists, NativeLibrary.Load);
+                LoadedFrom = found.Path;
+                LoadError = found.Error;
+                return found.Handle;
             }
-            return IntPtr.Zero; // default probing -> the copy bundled with the app
         }
 
-        private static IEnumerable<string> InstalledCandidates()
+        // Where the installed DLL may be, best first; blank values and repeats are skipped.
+        internal static IReadOnlyList<string> Candidates(Func<string, string?> readValue, string programFiles)
         {
-            string? dir = null;
-            try
+            var paths = new List<string>();
+            string? dllDir = readValue("DllX64Location");
+            if (!string.IsNullOrWhiteSpace(dllDir))
+                paths.Add(Path.Combine(dllDir, DllName));
+            string? installDir = readValue("InstallLocation");
+            if (!string.IsNullOrWhiteSpace(installDir))
+                paths.Add(Path.Combine(installDir, "x64", DllName));
+            if (!string.IsNullOrWhiteSpace(programFiles))
+                paths.Add(Path.Combine(programFiles, "vJoy", "x64", DllName));
+            return paths.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        }
+
+        // The first candidate that exists and loads wins. If none does, report the first load
+        // failure (e.g. a missing dependency) - "not found" would send the user the wrong way.
+        internal static (IntPtr Handle, string? Path, string? Error) Probe(
+            IEnumerable<string> candidates, Func<string, bool> exists, Func<string, IntPtr> load)
+        {
+            string? error = null;
+            foreach (string path in candidates)
             {
-                using var key = Registry.LocalMachine.OpenSubKey(UninstallKey);
-                dir = key?.GetValue("InstallLocation") as string;
+                if (!exists(path)) continue;
+                try { return (load(path), path, null); }
+                catch (Exception ex) { error ??= $"{path}: {ex.Message}"; }
             }
-            catch { }
-            if (!string.IsNullOrWhiteSpace(dir))
-                yield return Path.Combine(dir, "x64", DllName);
-            yield return Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "vJoy", "x64", DllName);
+            return (IntPtr.Zero, null, error);
         }
     }
 }

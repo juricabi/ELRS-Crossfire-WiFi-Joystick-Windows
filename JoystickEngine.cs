@@ -67,7 +67,8 @@ namespace ELRSWifiJoystick
         private DateTime lastStats = DateTime.Now;
         private int frameCount;
 
-        // Before any vJoy call, so the DLL matching the installed driver is the one loaded.
+        // Before any vJoy call (they all live in this class), so the DLL matching the
+        // installed driver is the one loaded.
         static JoystickEngine() => VJoyNative.Register();
 
         public bool IsRunning => running;
@@ -145,8 +146,15 @@ namespace ELRSWifiJoystick
                 // Not fatal - but a mismatched DLL acquires the device and then its axis
                 // writes silently go nowhere, which looks exactly like a network fault.
                 if (!match)
-                    Log?.Invoke("!! vJoy DLL does not match the installed driver - the gamepad may not move. " +
-                                "Reinstall vJoy (its own x64\\vJoyInterface.dll is used when found).");
+                {
+                    if (VJoyNative.LoadedFrom != null)
+                        Log?.Invoke("!! vJoy's own DLL does not match its driver - the gamepad may not move. " +
+                                    "Reboot if vJoy was just updated, otherwise reinstall vJoy.");
+                    else
+                        Log?.Invoke("!! The bundled vJoy DLL does not match the driver, and vJoy's own " +
+                                    (VJoyNative.LoadError != null ? $"failed to load ({VJoyNative.LoadError})" : "was not found") +
+                                    " - the gamepad may not move. Reinstall vJoy.");
+                }
 
                 deviceId = FindDevice();
                 if (deviceId == 0)
