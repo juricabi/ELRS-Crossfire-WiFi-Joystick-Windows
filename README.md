@@ -215,6 +215,7 @@ The application maps ExpressLRS channels to vJoy axes:
 | "vJoy Device 1 is already owned" | Close other applications using vJoy device #1 |
 | "Waiting for joystick data..." | Ensure the TX module is connected to WiFi; for Crossfire, wait for the `VELOCIDRONE` beacon or pass `--tx <module-ip>` |
 | No joystick input in simulator | Verify vJoy device is enabled and simulator recognizes "vJoy Device" |
+| **Streaming, but the vJoy device never moves** (joy.cpl stays centred) | The log line `vJoy driver X, DLL Y` shows a mismatch: `vJoyInterface.dll` must match the installed driver (e.g. driver 2.2.2 with a 2.1.9 DLL acquires the device but never moves it). The app uses vJoy's own `x64\vJoyInterface.dll` when it finds it — reinstall vJoy if it's missing |
 | Crossfire not detected | Confirm the module is on the same network (ping its IP); check the [firmware versions](#-crossfire-firmware-compatibility-important) below. Try `--tx <ip>` to activate directly |
 | Crossfire axes look wrong/half-throw | Channels are passed through as 15-bit like ELRS. If your radio's output differs, recalibrate the axes in the simulator |
 | **Connected but no data / axes don't move** | **Windows Firewall is blocking the incoming UDP stream.** The app adds a rule automatically (accept the one-time UAC prompt); if you declined it, click **Fix Firewall** in the app. |
