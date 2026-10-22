@@ -40,6 +40,23 @@ public class MiscTests
     }
 
     [Fact]
+    public void Clock_IsMonotonic_NotTheLocalWallClock()
+    {
+        // The lock timeout, the activation throttle and the 20 s Crossfire wait run on it: DateTime.Now steps
+        // back an hour at the end of daylight saving time (and with NTP or by hand), which held a restart or
+        // a lock for that hour. The default clock is a Stopwatch on a UTC base.
+        var e = new JoystickEngine();
+        Assert.Equal(new Func<DateTime>(JoystickEngine.MonotonicNow), e.Clock);
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        DateTime a = e.Clock();
+        Thread.Sleep(30);
+        DateTime b = e.Clock();
+        double elapsed = sw.Elapsed.TotalMilliseconds;
+        Assert.Equal(DateTimeKind.Utc, a.Kind);
+        Assert.InRange((b - a).TotalMilliseconds, 25, elapsed);
+    }
+
+    [Fact]
     public void OutputOverride_ReceivesEveryFrame()
     {
         var h = new Harness();

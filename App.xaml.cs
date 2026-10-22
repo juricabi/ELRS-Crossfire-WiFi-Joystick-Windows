@@ -49,19 +49,14 @@ namespace ELRSWifiJoystick
                 return;
             }
 
-            // Parse optional args: [port] [--tx <module-ip>]
-            int listenPort = 11000;
-            string? txIp = null;
-            for (int i = 0; i < args.Length; i++)
-            {
-                string a = args[i];
-                if ((a == "--tx" || a == "--crossfire" || a == "--activate") && i + 1 < args.Length)
-                    txIp = args[++i];
-                else if (int.TryParse(a, out int p) && p > 0 && p < 65536)
-                    listenPort = p;
-            }
+            // Optional args: [port] [--tx <module-ip>] [--rate HZ | --interval US] [--channels N]
+            var opt = AppArgs.Parse(args);
+            if (opt.Errors.Count > 0)
+                MessageBox.Show(
+                    "Command line:\n\n" + string.Join("\n", opt.Errors) + "\n\nThese were ignored. " + opt.Summary,
+                    "ELRS / Crossfire WiFi Joystick", MessageBoxButton.OK, MessageBoxImage.Warning);
 
-            var window = new MainWindow(listenPort, txIp);
+            var window = new MainWindow(opt.Port, opt.TxIp, opt.IntervalUs, opt.Channels);
             MainWindow = window;
             window.Show();
         }

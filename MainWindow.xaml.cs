@@ -17,11 +17,11 @@ namespace ELRSWifiJoystick
         // immediately would make the app appear to vanish.
         private bool trayHideArmed;
 
-        public MainWindow(int port, string? txIp)
+        public MainWindow(int port, string? txIp, int intervalUs, int channels)
         {
             InitializeComponent();
 
-            vm = new MainViewModel(port, txIp, a => Dispatcher.BeginInvoke(a));
+            vm = new MainViewModel(port, txIp, a => Dispatcher.BeginInvoke(a), intervalUs, channels);
             DataContext = vm;
             vm.HelpRequested += ShowHelp;
             vm.PropertyChanged += (s, e) =>

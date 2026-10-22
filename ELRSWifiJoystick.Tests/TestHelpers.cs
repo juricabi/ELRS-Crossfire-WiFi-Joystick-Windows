@@ -19,15 +19,25 @@ class Harness
     public readonly List<int[]> Applied = new();
     public readonly List<string> Log = new();
     public readonly List<(EngineState State, string Detail)> States = new();
-    public readonly List<string> Activated = new();
+    public readonly List<ActivationPost> Posts = new();     // every POST, in the order sent
+    public readonly List<string> Activated = new();         // plain activations: joystick_begin, not a restart
     public readonly List<int[]> ChannelEvents = new();
-    public bool ActivateResult = true;
+    public bool ActivateResult = true;                      // the answer to a plain joystick_begin
+    public bool RestartResult = true;                       // ... to the joystick_begin of a restart
+    public bool EndResult = true;                           // ... to a joystick_end
 
     public Harness()
     {
         Engine.Clock = () => Clock.Now;
         Engine.OutputOverride = ch => Applied.Add((int[])ch.Clone());
-        Engine.ActivateOverride = ip => { Activated.Add(ip); return ActivateResult; };
+        Engine.ActivateOverride = p =>
+        {
+            Posts.Add(p);
+            if (p.Action == JoystickEngine.ActionEnd) return EndResult;
+            if (p.Restart) return RestartResult;
+            Activated.Add(p.Ip);
+            return ActivateResult;
+        };
         Engine.Log += Log.Add;
         Engine.StateChanged += (s, d) => States.Add((s, d));
         Engine.ChannelsUpdated += ch => ChannelEvents.Add((int[])ch.Clone());
@@ -37,6 +47,15 @@ class Harness
         => Engine.Process(data, new IPEndPoint(IPAddress.Parse(ip), 49153));
 
     public int StreamingCount => States.Count(s => s.State == EngineState.Streaming);
+
+    // One joystick_end per restart; the joystick_begin that follows it carries the request.
+    public List<ActivationPost> Ends => Posts.Where(p => p.Action == JoystickEngine.ActionEnd).ToList();
+    public List<ActivationPost> RestartBegins =>
+        Posts.Where(p => p.Action == JoystickEngine.ActionBegin && p.Restart).ToList();
+    public int CountLog(string part) => Log.Count(l => l.Contains(part));
+
+    // n channels, all at v.
+    public void Same(string ip, int n, int v) => Packet(Frames.Channels(Enumerable.Repeat(v, n).ToArray()), ip);
 }
 
 static class Frames

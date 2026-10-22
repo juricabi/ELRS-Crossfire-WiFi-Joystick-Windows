@@ -22,6 +22,16 @@
 
   <ItemGroup>
     <ProjectReference Include="..\ELRSWifiJoystick.csproj" />
+    <!-- for the vJoy axis order test (HID_USAGES); never called: the tests need no vJoy -->
+    <Reference Include="vJoyInterfaceWrap">
+      <HintPath>..\lib\vJoyInterfaceWrap.dll</HintPath>
+    </Reference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The CLI's pure parsing (options, commands, status line): the CLI is an exe of its own, so its
+         file is compiled in here rather than referenced. -->
+    <Compile Include="..\ELRSWifiJoystick.Cli\CliArgs.cs" Link="CliArgs.cs" />
   </ItemGroup>
 
 </Project>

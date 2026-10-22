@@ -14,3 +14,8 @@ mismatched DLL acquires the device but never moves it), so any vJoy version work
 
 The application will not build without these files.
 
+Without installing vJoy: both DLLs are in the x64 folder of the vJoy installer, e.g.
+    innoextract vJoySetup.exe        (vJoy 2.1.9.1 from github.com/jshafer817/vJoy/releases)
+    copy app\x64\vJoyInterfaceWrap.dll and app\x64\vJoyInterface.dll here
+That is what the CI build does (.github/workflows/build.yml).
+
