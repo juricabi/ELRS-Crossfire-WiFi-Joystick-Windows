@@ -1,0 +1,157 @@
+# By hand: Actions > release > Run workflow, on main, with the version (3.3). It checks the version
+# against both .csproj files (AssemblyVersion and FileVersion 3.3.0.0), the zip names in publish.bat and
+# publish-cli.bat, line 1 of docs/QUICKSTART.txt (ends with "-  v3.3"), the CLI banner in
+# ELRSWifiJoystick.Cli/Program.cs ("CLI v3.3") and the notes docs/releases/v3.3.md (first line
+# "## v3.3 - <headline>"), runs all of build.yml (build, tests, the two zips), then publishes the
+# release release_3.3 on this commit:
+#   title   the notes' first line without "## "
+#   notes   docs/releases/v3.3.md
+#   assets  ELRSWifiJoystick_v3.3.zip, ELRSWifiJoystickCli_v3.3.zip (from build.yml)
+# Running it again on the same commit replaces the assets and the notes. When the tag release_3.3 is
+# on another commit already, it stops: release a new version.
+name: release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release, like 3.3 (the .csproj files, publish*.bat, docs/QUICKSTART.txt, the CLI banner and docs/releases/v<version>.md must say it); the tag release_<version> is made on this commit"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+# one release run at a time
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: the version matches the project
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        shell: bash
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          ver=${INPUT_VERSION#v}
+          tag=release_$ver
+          bad=0
+          err() { echo "::error::$*"; bad=1; }
+          if [ "$GITHUB_REF" != refs/heads/main ]; then
+            err "run it on main (this run is on $GITHUB_REF)"
+          fi
+          if ! [[ "$ver" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
+            echo "::error::the version \"$INPUT_VERSION\" is not X.Y (or X.Y.Z)"
+            exit 1
+          fi
+          # 3.3 -> 3.3.0.0
+          IFS=. read -ra parts <<< "$ver"
+          while [ "${#parts[@]}" -lt 4 ]; do parts+=(0); done
+          ver4=$(IFS=.; echo "${parts[*]}")
+          for f in ELRSWifiJoystick.csproj ELRSWifiJoystick.Cli/ELRSWifiJoystick.Cli.csproj; do
+            for p in AssemblyVersion FileVersion; do
+              got=$( { grep -o "<$p>[^<]*</$p>" "$f" || true; } | sed "s|</*$p>||g" | paste -sd ' ')
+              [ "$got" = "$ver4" ] || err "$f: $p is ${got:-missing}, expected $ver4"
+            done
+          done
+          for z in publish.bat:ELRSWifiJoystick publish-cli.bat:ELRSWifiJoystickCli; do
+            f=${z%%:*}
+            name=${z#*:}
+            got=$( { grep -o "${name}_v[0-9][0-9.]*\.zip" "$f" || true; } | sort -u | paste -sd ' ')
+            [ "$got" = "${name}_v$ver.zip" ] || err "$f makes ${got:-no zip}, expected ${name}_v$ver.zip"
+          done
+          # the version people see: line 1 of QUICKSTART.txt (in the GUI zip) and the CLI's banner
+          f=docs/QUICKSTART.txt
+          got=$(head -n 1 "$f" | tr -d '\r')
+          got=${got#$'\xef\xbb\xbf'}
+          [[ "$got" == *"-  v$ver" ]] || err "$f: line 1 must end with \"-  v$ver\" (it is \"$got\")"
+          f=ELRSWifiJoystick.Cli/Program.cs
+          got=$( { grep -o 'CLI v[0-9][0-9.]*' "$f" || true; } | sort -u | paste -sd ' ')
+          [ "$got" = "CLI v$ver" ] || err "$f: the banner says ${got:-no \"CLI v<version>\"}, expected CLI v$ver"
+          notes=docs/releases/v$ver.md
+          if [ ! -f "$notes" ]; then
+            err "$notes is missing: write the release notes first"
+          else
+            first=$(head -n 1 "$notes" | tr -d '\r')
+            headline=${first#"## v$ver - "}
+            if [ "$headline" = "$first" ] || ! [[ "$headline" =~ [^[:space:]] ]]; then
+              err "$notes must start with \"## v$ver - <headline>\" (it starts with \"$first\")"
+            fi
+          fi
+          # the tag must not exist yet, or already be this commit (a run again); the commit it points
+          # at: an annotated tag's peeled line (refs/tags/X^{}) sorts first in reverse
+          at=$(git ls-remote --tags origin "refs/tags/$tag" "refs/tags/$tag^{}" | sort -r -k2 | awk 'NR==1 {print $1}')
+          if [ -n "$at" ] && [ "$at" != "$GITHUB_SHA" ]; then
+            err "the tag $tag exists already on another commit ($at): release a new version"
+          fi
+          [ "$bad" = 0 ] || exit 1
+          echo "version=$ver" >> "$GITHUB_OUTPUT"
+          echo "release $tag: $first"
+
+  ci:
+    name: build and test
+    needs: check
+    uses: ./.github/workflows/build.yml
+    with:
+      version: ${{ needs.check.outputs.version }}
+    permissions:
+      contents: read
+
+  publish:
+    name: publish the release
+    needs: [check, ci]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      VER: ${{ needs.check.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-zips
+          path: dist
+      - name: The assets
+        shell: bash
+        run: |
+          ls -l dist
+          files=(dist/*)
+          if [ "${#files[@]}" -ne 2 ] || [ ! -f "dist/ELRSWifiJoystick_v$VER.zip" ] || [ ! -f "dist/ELRSWifiJoystickCli_v$VER.zip" ]; then
+            echo "::error::dist/ does not hold exactly the two zips of v$VER"
+            exit 1
+          fi
+          [ "$(unzip -Z1 "dist/ELRSWifiJoystick_v$VER.zip" | tr '\n' ' ')" = "ELRSWifiJoystick.exe QUICKSTART.txt " ] || { echo "::error::ELRSWifiJoystick_v$VER.zip does not hold ELRSWifiJoystick.exe and QUICKSTART.txt"; exit 1; }
+          [ "$(unzip -Z1 "dist/ELRSWifiJoystickCli_v$VER.zip" | tr '\n' ' ')" = "ELRSWifiJoystickCli.exe " ] || { echo "::error::ELRSWifiJoystickCli_v$VER.zip does not hold ELRSWifiJoystickCli.exe"; exit 1; }
+      - name: Publish
+        shell: bash
+        run: |
+          tag=release_$VER
+          notes=docs/releases/v$VER.md
+          first=$(head -n 1 "$notes" | tr -d '\r')
+          title=${first#"## "}
+          # again, right before publishing: the tag is not on another commit
+          at=$(git ls-remote --tags origin "refs/tags/$tag" "refs/tags/$tag^{}" | sort -r -k2 | awk 'NR==1 {print $1}')
+          if [ -n "$at" ] && [ "$at" != "$GITHUB_SHA" ]; then
+            echo "::error::the tag $tag exists already on another commit ($at)"
+            exit 1
+          fi
+          echo "$tag: $title"
+          if gh release view "$tag" > /dev/null 2>&1; then
+            # a run again: the same release, new assets and notes
+            gh release upload "$tag" dist/*.zip --clobber
+            gh release edit "$tag" --title "$title" --notes-file "$notes"
+          else
+            gh release create "$tag" dist/*.zip --target "$GITHUB_SHA" --title "$title" --notes-file "$notes"
+          fi
+          gh release view "$tag"

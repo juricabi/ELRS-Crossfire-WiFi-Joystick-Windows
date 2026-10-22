@@ -1,9 +1,19 @@
+# Every push and pull request (and called by release.yml, with the version to release): build the GUI
+# and the CLI, run the tests, then make the two release zips exactly as publish.bat and publish-cli.bat
+# do and upload them as the artifact "release-zips". release.yml publishes that artifact.
 name: build
 
 on:
   push:
   pull_request:
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      version:
+        description: "The version to package (release.yml, like 3.3): publish.bat and publish-cli.bat must name their zips with it; empty = what they say"
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -65,3 +75,124 @@ jobs:
           name: test-results
           path: TestResults
           if-no-files-found: ignore
+
+      # The release zips, made exactly as publish.bat and publish-cli.bat make them: their dotnet publish
+      # command and their Compress-Archive line, word for word. Keep the .bat files and this step in step:
+      # it fails when a .bat file no longer has the same lines. (It does not run the .bat files: they end
+      # with "pause".) Before zipping: each exe has FileVersion <version>.0.0 and embeds lib\'s vJoy DLLs
+      # (the installer's above). The 3.2 exes had the same vJoyInterface.dll but the vJoyInterfaceWrap.dll
+      # of vJoy 2.2.2.0; these have the 2.1.9.1 installer's (assembly 0.2.1.6). Both have the calls the app
+      # makes, and the app loads the installed vJoy's own vJoyInterface.dll when it finds it (VJoyNative.cs).
+      - name: Release zips (as publish.bat and publish-cli.bat)
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          $packages = @(
+            @{ Bat = 'publish.bat'; Zip = 'ELRSWifiJoystick'
+               Publish = 'dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o bin\Release\net6.0-windows\win-x64\publish'
+               Files = @('bin\Release\net6.0-windows\win-x64\publish\ELRSWifiJoystick.exe', 'docs\QUICKSTART.txt') }
+            @{ Bat = 'publish-cli.bat'; Zip = 'ELRSWifiJoystickCli'
+               Publish = 'dotnet publish ELRSWifiJoystick.Cli -c Release'
+               Files = @('ELRSWifiJoystick.Cli\bin\Release\net6.0-windows\win-x64\publish\ELRSWifiJoystickCli.exe') }
+          )
+
+          # sha256 of the named files inside a single-file exe, from its bundle manifest (the format of
+          # Microsoft.NET.HostModel's Bundler, version 6 since .NET 6): the host keeps the manifest's
+          # offset in the 8 bytes before a fixed 32-byte signature
+          function Get-BundledSha256([string]$exe, [string[]]$names) {
+            $b = [IO.File]::ReadAllBytes((Convert-Path -LiteralPath $exe))
+            $latin1 = [Text.Encoding]::Latin1
+            $sig = [byte[]](0x8b, 0x12, 0x02, 0xb9, 0x6a, 0x61, 0x20, 0x38, 0x72, 0x7b, 0x93, 0x02, 0x14, 0xd7, 0xa0, 0x32,
+                            0x13, 0xf5, 0xb9, 0xe6, 0xef, 0xae, 0x33, 0x18, 0xee, 0x3b, 0x2d, 0xce, 0x24, 0xb3, 0x6a, 0xae)
+            $at = $latin1.GetString($b).IndexOf($latin1.GetString($sig), [StringComparison]::Ordinal)
+            if ($at -lt 8) { throw "$exe is not a single-file bundle" }
+            $r = [IO.BinaryReader]::new([IO.MemoryStream]::new($b, $false))
+            $r.BaseStream.Position = [BitConverter]::ToInt64($b, $at - 8)
+            $major = $r.ReadUInt32(); $null = $r.ReadUInt32(); $count = $r.ReadInt32(); $null = $r.ReadString()
+            if ($major -lt 6) { throw "${exe}: bundle version $major, expected 6 or newer" }
+            $null = $r.ReadBytes(40)   # deps.json and runtimeconfig.json offsets and sizes, flags
+            $found = @{}
+            for ($i = 0; $i -lt $count; $i++) {
+              $offset = $r.ReadInt64(); $size = $r.ReadInt64(); $compressed = $r.ReadInt64(); $null = $r.ReadByte()
+              $path = $r.ReadString()
+              if ($names -notcontains $path) { continue }
+              $s = [IO.MemoryStream]::new($b, [int]$offset, [int]$(if ($compressed) { $compressed } else { $size }), $false)
+              if ($compressed) { $s = [IO.Compression.DeflateStream]::new($s, [IO.Compression.CompressionMode]::Decompress) }
+              $data = [IO.MemoryStream]::new(); $s.CopyTo($data); $s.Dispose()
+              if ($data.Length -ne $size) { throw "${exe}: $path is $($data.Length) bytes inside, the manifest says $size" }
+              $found[$path] = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($data.ToArray()))
+            }
+            $found
+          }
+
+          # the version: the zip names in the .bat files (both the same, and the one asked for, if any)
+          $ver = $null
+          foreach ($p in $packages) {
+            $lines = @(Get-Content -LiteralPath $p.Bat | ForEach-Object { $_.Trim() })
+            if ($lines -cnotcontains $p.Publish) { throw "$($p.Bat) no longer runs: $($p.Publish) (keep it and build.yml in step)" }
+            $zipLines = @($lines | Where-Object { $_ -match 'Compress-Archive' })
+            if ($zipLines.Count -ne 1 -or $zipLines[0] -cnotmatch "-DestinationPath '$($p.Zip)_v(\d+\.\d+(\.\d+)?)\.zip'") {
+              throw "$($p.Bat): no single Compress-Archive line that makes $($p.Zip)_v<version>.zip"
+            }
+            $v = $Matches[1]
+            $want = "powershell -Command ""Compress-Archive -Path '$($p.Files -join "','")' -DestinationPath '$($p.Zip)_v$v.zip' -Force"""
+            if ($zipLines[0] -cne $want) { throw "$($p.Bat) zips other files: $($zipLines[0]), build.yml: $want (keep them in step)" }
+            if ($ver -and $v -ne $ver) { throw "publish.bat makes v$ver, publish-cli.bat v$v" }
+            $ver = $v
+          }
+          if ($env:RELEASE_VERSION -and $env:RELEASE_VERSION -ne $ver) { throw "the release is $env:RELEASE_VERSION, the .bat files make v$ver" }
+          $ver4 = (@($ver -split '\.') + @('0', '0'))[0..3] -join '.'
+          Write-Host "version $ver (FileVersion $ver4)"
+
+          foreach ($p in $packages) {
+            Write-Host "::group::$($p.Publish)"
+            $cmd, $arguments = $p.Publish -split ' '
+            & $cmd @arguments
+            if ($LASTEXITCODE -ne 0) { throw "$($p.Publish) failed ($LASTEXITCODE)" }
+            Write-Host "::endgroup::"
+          }
+
+          foreach ($p in $packages) {
+            $exe = $p.Files[0]
+            $fv = (Get-Item -LiteralPath $exe).VersionInfo.FileVersion
+            if ($fv -ne $ver4) { throw "$exe has FileVersion '$fv', expected $ver4 (AssemblyVersion/FileVersion in the .csproj)" }
+            $dlls = 'vJoyInterfaceWrap.dll', 'vJoyInterface.dll'
+            $inside = Get-BundledSha256 $exe $dlls
+            foreach ($dll in $dlls) {
+              $want = (Get-FileHash -LiteralPath "lib\$dll" -Algorithm SHA256).Hash
+              if (-not $inside[$dll]) { throw "$exe does not embed $dll" }
+              if ($inside[$dll] -ne $want) { throw "$exe embeds a $dll that is not lib\$dll ($($inside[$dll]), expected $want)" }
+            }
+            Write-Host ("{0}: FileVersion {1}, {2:N1} MB, embeds lib\{3} and lib\{4}" -f $exe, $fv, ((Get-Item -LiteralPath $exe).Length / 1MB), $dlls[0], $dlls[1])
+          }
+
+          # QUICKSTART.txt with Windows line endings (CRLF), as in the earlier releases: a checkout on
+          # Windows has them already (git's core.autocrlf); this makes sure
+          $q = Convert-Path -LiteralPath 'docs\QUICKSTART.txt'
+          $latin1 = [Text.Encoding]::Latin1
+          $text = $latin1.GetString([IO.File]::ReadAllBytes($q))
+          $crlf = $text -replace "(?<!`r)`n", "`r`n"
+          if ($crlf -cne $text) { [IO.File]::WriteAllBytes($q, $latin1.GetBytes($crlf)); Write-Host "docs\QUICKSTART.txt: made its line endings CRLF" }
+
+          foreach ($p in $packages) {
+            $zip = "$($p.Zip)_v$ver.zip"
+            Compress-Archive -Path $p.Files -DestinationPath $zip -Force
+            $z = [IO.Compression.ZipFile]::OpenRead((Convert-Path -LiteralPath $zip))
+            $names = @($z.Entries | ForEach-Object FullName)
+            $z.Dispose()
+            $want = @($p.Files | ForEach-Object { Split-Path -Leaf $_ })
+            if (($names -join ', ') -cne ($want -join ', ')) { throw "$zip holds $($names -join ', '), expected $($want -join ', ')" }
+            Write-Host ("{0}: {1:N1} MB: {2}" -f $zip, ((Get-Item -LiteralPath $zip).Length / 1MB), ($names -join ', '))
+          }
+
+      - name: Upload the release zips
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-zips
+          path: |
+            ELRSWifiJoystick_v*.zip
+            ELRSWifiJoystickCli_v*.zip
+          if-no-files-found: error
+          retention-days: 5
+          compression-level: 0
