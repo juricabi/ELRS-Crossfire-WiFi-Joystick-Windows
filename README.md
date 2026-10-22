@@ -99,6 +99,10 @@ Both radios use the same "WiFi joystick" protocol (the one VelociDrone Mobile sp
 **build.bat** creates a development build with separate files, making it easier to debug and modify.  
 **publish.bat** creates a single-file executable perfect for distribution to end users.
 
+A release is made by GitHub Actions: *Actions > release > Run workflow* on `main`, with the version (`3.3`).
+It needs `docs/releases/v3.3.md` (first line `## v3.3 - <headline>`) and that version in both `.csproj` files, both publish scripts,
+line 1 of `docs/QUICKSTART.txt` and the CLI banner in `ELRSWifiJoystick.Cli/Program.cs`.
+
 ### Running the Tests
 
 The engine and the view model have a full xUnit test suite (`ELRSWifiJoystick.Tests/`)

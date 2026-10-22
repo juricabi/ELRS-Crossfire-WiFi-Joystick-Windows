@@ -11,6 +11,8 @@ obj/
 [Dd]ebugPublic/
 [Rr]elease/
 [Rr]eleases/
+# but not the release notes (release.yml publishes docs/releases/v<version>.md)
+!docs/releases/
 x64/
 x86/
 [Aa][Rr][Mm]/
