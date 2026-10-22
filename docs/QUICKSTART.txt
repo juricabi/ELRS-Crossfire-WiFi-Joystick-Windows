@@ -27,7 +27,9 @@ RATE & CHANNELS
 The Rate and Channels boxes say what the module is asked for: 250 Hz and
 16 channels by default (1000, 500, 333, 250, 200, 150, 100 or 50 Hz;
 4 to 16 channels).
-- ExpressLRS (3.4.0 and later) switches at once: its stream restarts.
+- ExpressLRS (3.4.0 and later) takes a change by restarting its stream: at
+  once, or within 20 s for a module that has sent no beacon yet and streams
+  16 channels (it may be a Crossfire).
 - Crossfire / Tracer ignores both - always 16 channels at about 90 Hz - so
   the boxes are greyed out while it is connected.
 - Start values from the command line, e.g.:
@@ -42,6 +44,8 @@ TIPS
   CPU use drops to almost nothing.
 - The module keeps broadcasting until it is powered off; that's normal
   (closing the app only stops reading it).
+- When no data comes for 3 s (radio off, out of range), the vJoy axes go to
+  the center and the buttons are released; the same on Stop and on closing.
 - On Linux? https://github.com/juricabi/elrs-crossfire-wifi-joystick-linux
 
 Project & source: https://github.com/juricabi/ELRS-Crossfire-WiFi-Joystick-Windows

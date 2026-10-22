@@ -194,6 +194,183 @@ public class EngineLifecycleTests
         Assert.False(e.IsRunning);
     }
 
+    private static void SendFrom(string ip, int port, byte[] data)
+    {
+        using var c = new UdpClient(new IPEndPoint(IPAddress.Parse(ip), 0));
+        c.Send(data, data.Length, new IPEndPoint(IPAddress.Loopback, port));
+    }
+
+    [Fact]
+    public void IgnoredTraffic_DoesNotStarveTheTick()
+    {
+        // Module IP 127.0.0.2, locked; another module (127.0.0.3) keeps streaming to this PC, so a receive
+        // never times out. When the target goes quiet its lock must still go (3 s), and the joystick center.
+        const int port = 27408;
+        var dev = new FakeOutput();
+        var e = NewEngine(port, new List<int[]>(), new List<string>());
+        e.ActivationIP = "127.0.0.2";
+        e.DeviceForTest = dev;
+        var log = new List<string>();
+        e.Log += m => { lock (log) log.Add(m); };
+        e.Start();
+        using var stopFlood = new ManualResetEventSlim();
+        var flood = new Thread(() =>
+        {
+            using var c = new UdpClient(new IPEndPoint(IPAddress.Parse("127.0.0.3"), 0));
+            var f = Frames.Channels(Enumerable.Repeat(100, 16).ToArray());
+            while (!stopFlood.Wait(5)) c.Send(f, f.Length, new IPEndPoint(IPAddress.Loopback, port));
+        }) { IsBackground = true };
+        try
+        {
+            Thread.Sleep(250);
+            Assert.True(WaitFor(() => { SendFrom("127.0.0.2", port, Frames.Channels(Enumerable.Repeat(32767, 16).ToArray()));
+                                        return e.Source == "127.0.0.2"; }, 3000));
+            Assert.True(WaitFor(() => e.ButtonMask == 0xFF, 2000));
+            flood.Start();
+            Assert.True(WaitFor(() => { lock (log) return log.Contains("Source 127.0.0.2 went quiet - releasing lock"); }, 5000),
+                        "the lock must be released while other traffic arrives");
+            Assert.Null(e.Source);
+            Assert.True(WaitFor(() => e.ButtonMask == 0, 1000));
+        }
+        finally
+        {
+            stopFlood.Set();
+            if (flood.IsAlive) flood.Join(2000);
+            e.StopAndWait(2000);
+        }
+    }
+
+    [Fact]
+    public void StopRightAfterStart_IsAStop_NotAPortError()
+    {
+        const int port = 27412;
+        for (int i = 0; i < 10; i++)
+        {
+            using var stopped = new ManualResetEventSlim();
+            using var error = new ManualResetEventSlim();
+            var e = NewEngine(port, new List<int[]>(), new List<string>(), error: error, stopped: stopped);
+            var log = new List<string>();
+            e.Log += m => { lock (log) log.Add(m); };
+            e.Start();
+            e.Stop();
+            e.StopAndWait(2000);
+            Assert.True(stopped.Wait(3000), "a stop reports Stopped");
+            Assert.False(error.IsSet, "nothing was wrong with the port");
+            lock (log) Assert.DoesNotContain(log, l => l.Contains("cannot listen"));
+        }
+    }
+
+    [Fact]
+    public void TheJoystick_IsCenteredAtStart_AndWhenStopped()
+    {
+        // vJoy's ResetVJD puts RX, RY, RZ and the sliders at their minimum (throttle down, yaw full left), and
+        // RelinquishVJD keeps what the device shows: the app centers all 8 axes and releases the buttons itself.
+        const int port = 27413;
+        var dev = new FakeOutput();
+        var e = NewEngine(port, new List<int[]>(), new List<string>());
+        e.DeviceForTest = dev;
+        e.Start();
+        try
+        {
+            // the axes are written first, then the buttons: wait for both before reading them
+            Assert.True(WaitFor(() => dev.Axes.Count == 8 && dev.Btns.Count == 8, 2000));
+            Assert.Equal(Enumerable.Range(0, 8).Select(i => (i, JoystickMap.Center)), dev.Axes);
+            Assert.Equal(Enumerable.Range(0, 8).Select(i => (i, false)), dev.Btns);
+            Thread.Sleep(150);
+            Assert.True(WaitFor(() => { Send(port, Frames.Channels(Enumerable.Repeat(32767, 16).ToArray()));
+                                        return e.ButtonMask == 0xFF; }, 3000));
+        }
+        finally
+        {
+            e.StopAndWait(2000);
+        }
+        Assert.Equal(Enumerable.Range(0, 8).Select(i => (i, JoystickMap.Center)), dev.Axes.TakeLast(8));
+        Assert.Equal(Enumerable.Range(0, 8).Select(i => (i, false)), dev.Btns.TakeLast(8));
+        Assert.Equal(0, e.ButtonMask);
+    }
+
+    [Fact]
+    public void RequestChangedWhileStopped_ReachesTheModuleThatKeptStreaming()
+    {
+        // Stop sends no joystick_end, so the module keeps streaming (and an ELRS module that streams sends no
+        // beacon): the next session's lock restarts it with the request picked meanwhile.
+        const int port = 27414;
+        var posts = new List<ActivationPost>();
+        var e = new JoystickEngine
+        {
+            Port = port, SkipVJoyForTest = true, OutputOverride = _ => { },
+            ActivateOverride = p => { lock (posts) posts.Add(p); return true; },
+        };
+        e.SetRequest(4000, 8);
+        var f8 = Frames.Channels(Enumerable.Repeat(100, 8).ToArray());
+        e.Start();
+        try
+        {
+            Thread.Sleep(250);
+            Assert.True(WaitFor(() => { Send(port, Frames.Ascii("ELRS")); lock (posts) return posts.Count > 0; }, 3000));
+            Assert.True(WaitFor(() => { Send(port, f8); return e.Source != null; }, 3000));
+            e.StopAndWait(2000);
+            Assert.True(e.SetRequest(2000, 8));                 // nothing is sent while stopped
+            lock (posts) Assert.DoesNotContain(posts, p => p.Action == JoystickEngine.ActionEnd);
+            e.Start();
+            Thread.Sleep(250);
+            Assert.True(WaitFor(() => { Send(port, f8); lock (posts) return posts.Any(p => p.Action == JoystickEngine.ActionEnd); }, 3000),
+                        "the module that kept streaming the old request is restarted");
+            lock (posts) Assert.Equal(new ActivationPost("127.0.0.1", JoystickEngine.ActionBegin, 2000, 8, true), posts[^1]);
+        }
+        finally
+        {
+            e.StopAndWait(2000);
+        }
+    }
+
+    [Fact]
+    public void RestartCutShortByStop_IsDoneWhenTheModuleLocksAgain()
+    {
+        // A slow module: the restart for a request change waits behind its activation when Stop drops it. The
+        // module never got it and keeps streaming the old request: the next session's lock must restart it, not
+        // take it for done.
+        const int port = 27416;
+        var posts = new List<ActivationPost>();
+        using var hold = new ManualResetEventSlim();
+        var e = new JoystickEngine
+        {
+            Port = port, SkipVJoyForTest = true, OutputOverride = _ => { }, AsyncPostsForTest = true,
+            ActivateOverride = p =>
+            {
+                int n;
+                lock (posts) { posts.Add(p); n = posts.Count; }
+                if (n == 1) hold.Wait(5000);            // the activation hangs
+                return true;
+            },
+        };
+        e.SetRequest(4000, 8);
+        var f8 = Frames.Channels(Enumerable.Repeat(100, 8).ToArray());
+        e.Start();
+        try
+        {
+            Thread.Sleep(250);
+            Assert.True(WaitFor(() => { Send(port, Frames.Ascii("ELRS")); lock (posts) return posts.Count > 0; }, 3000));
+            Assert.True(WaitFor(() => { Send(port, f8); return e.Source != null; }, 3000));
+            Assert.True(e.SetRequest(2000, 8));                // queued behind the hanging activation
+            e.StopAndWait(2000);
+            hold.Set();
+            Assert.True(e.WaitForPostsForTest(5000));
+            lock (posts) Assert.DoesNotContain(posts, p => p.Action == JoystickEngine.ActionEnd);
+            e.Start();
+            Thread.Sleep(250);
+            Assert.True(WaitFor(() => { Send(port, f8); lock (posts) return posts.Any(p => p.Action == JoystickEngine.ActionEnd); }, 3000),
+                        "the module that kept the old request is restarted");
+            Assert.True(e.WaitForPostsForTest(5000));
+            lock (posts) Assert.Equal(new ActivationPost("127.0.0.1", JoystickEngine.ActionBegin, 2000, 8, true), posts[^1]);
+        }
+        finally
+        {
+            hold.Set();
+            e.StopAndWait(2000);
+        }
+    }
+
     [Fact]
     public void StoppedState_IsReported_OnShutdown()
     {

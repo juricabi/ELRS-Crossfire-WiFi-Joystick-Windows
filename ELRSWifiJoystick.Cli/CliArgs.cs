@@ -16,7 +16,8 @@ namespace ELRSWifiJoystick
         public string? Error;          // bad command line: print it and the usage, exit code 2
 
         // In order, like before: --help wins only if nothing before it was wrong. --rate and --interval
-        // set the same thing, so the later one wins.
+        // set the same thing, so the later one wins. An option's value may follow it or come as
+        // --name=value (like the Linux app); the next option is never taken for a value.
         public static CliOptions Parse(IReadOnlyList<string> args)
         {
             var o = new CliOptions();
@@ -24,11 +25,21 @@ namespace ELRSWifiJoystick
             {
                 string a = args[i];
                 string? v = null;
-                bool needsValue = a is "--tx" or "--crossfire" or "--activate" or "--rate" or "--interval" or "--channels";
-                if (needsValue)
+                int eq = a.StartsWith("--") ? a.IndexOf('=') : -1;
+                if (eq > 0)
                 {
-                    if (i + 1 >= args.Count) return o.Fail($"{a} needs a value" + Use(a));
+                    v = a.Substring(eq + 1);
+                    a = a.Substring(0, eq);
+                }
+                bool needsValue = a is "--tx" or "--crossfire" or "--activate" or "--rate" or "--interval" or "--channels";
+                if (needsValue && v == null)
+                {
+                    if (i + 1 >= args.Count || args[i + 1].StartsWith("--")) return o.Fail($"{a} needs a value" + Use(a));
                     v = args[++i];
+                }
+                else if (!needsValue && v != null)
+                {
+                    return o.Fail($"Unknown argument: {args[i]}");
                 }
                 string err;
                 switch (a)
@@ -37,7 +48,9 @@ namespace ELRSWifiJoystick
                         o.Help = true;
                         return o;
                     case "--tx": case "--crossfire": case "--activate":
-                        o.TxIp = v;
+                        if (string.IsNullOrWhiteSpace(v)) return o.Fail($"{a} needs a value" + Use(a));
+                        if (!JoystickEngine.TryParseModuleIp(v, out o.TxIp))
+                            return o.Fail($"{a}: \"{StreamRequest.Printable(v.Trim())}\" is not an IPv4 address - use a.b.c.d");
                         break;
                     case "--no-firewall":
                         o.NoFirewall = true;
@@ -139,16 +152,24 @@ namespace ELRSWifiJoystick
             e.SetRequest(iv, ch);
         }
 
-        // The status line: measured rate / asked rate (Crossfire: its own), jitter, CH1-8 in %, and the
-        // CH9-16 buttons ("B:1--4----": the number when pressed) when the frame carries them.
+        // The status line, at most 79 characters so it fits an 80-column console: measured rate / asked rate
+        // (Crossfire: its own), jitter, CH1-4 in % (roll, pitch, throttle, yaw), CH5-8 in % ("A:", the aux
+        // channels) and the CH9-16 buttons ("B:1--4----": the number when pressed) when the frame carries them.
         public static string FormatStatus(double rate, double jitter, int[] ch, int askedHz, bool crossfire, int buttonMask)
         {
+            static int Pct(int raw) => Math.Clamp(raw, 0, 32767) * 100 / 32767;
             var sb = new StringBuilder();
-            sb.Append(crossfire ? $"  {rate,3:0} Hz XF" : $"  {rate,3:0}/{askedHz} Hz");
-            sb.Append($"  {jitter,4:0.0} ms  |");
-            string[] n = { "R", "P", "T", "Y", "A1", "A2", "A3", "A4" };
-            for (int i = 0; i < 8 && i < ch.Length; i++)
-                sb.Append($" {n[i]}:{Math.Clamp(ch[i], 0, 32767) * 100 / 32767,3}%");
+            sb.Append(crossfire ? $"{rate,4:0} Hz XF" : $"{rate,4:0}/{askedHz} Hz");
+            sb.Append($" {jitter,4:0.0} ms |");
+            string[] n = { "R", "P", "T", "Y" };
+            for (int i = 0; i < 4 && i < ch.Length; i++)
+                sb.Append($" {n[i]}:{Pct(ch[i]),3}");
+            if (ch.Length > 4)
+            {
+                sb.Append("  A:");
+                for (int i = 4; i < 8 && i < ch.Length; i++)
+                    sb.Append($"{Pct(ch[i]),4}");
+            }
             int buttons = Math.Min(JoystickMap.ButtonCount, ch.Length - JoystickMap.FirstButtonChannel);
             if (buttons > 0)
             {

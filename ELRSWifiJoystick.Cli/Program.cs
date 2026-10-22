@@ -173,16 +173,17 @@ namespace ELRSWifiJoystick
             SetTargetCmd(engine, Prompt("Module IP (empty = auto-discover): "));
         }
 
-        private static void SetTargetCmd(JoystickEngine engine, string? ip)
+        private static void SetTargetCmd(JoystickEngine engine, string? text)
         {
-            ip = string.IsNullOrWhiteSpace(ip) ? null : ip.Trim();
             if (engine.IsRunning)
-                engine.SetTarget(ip);
-            else
+                engine.SetTarget(text);         // checks it (a.b.c.d) and says so
+            else if (JoystickEngine.TryParseModuleIp(text, out string? ip))
             {
                 engine.ActivationIP = ip;
                 engine.Start();
             }
+            else
+                Log($"Invalid module IP \"{StreamRequest.Printable((text ?? "").Trim())}\" - use a.b.c.d", ConsoleColor.Yellow);
         }
 
         // 'p' - mirror of the GUI Port box: editable only while stopped, and applying
@@ -349,6 +350,8 @@ Usage: ELRSWifiJoystickCli [port] [--tx <module-ip>] [--rate HZ | --interval US]
   --channels N    Channels to ask for: 4 to 16 (default 16)
   --no-firewall   Skip the Windows Firewall check/rule
   --help          This help
+An option's value may also be given as --rate=500. The module IP is an IPv4
+address (a.b.c.d), as on the module's WiFi page.
 
 ELRS (3.4.0 and later) streams the rate and channels asked for; a change while
 it streams restarts its stream. Crossfire ignores both: it always sends 16

@@ -20,7 +20,8 @@ namespace ELRSWifiJoystick
     // "unknown" after a reset (vJoy's ResetVJD need not center every axis) and after a failed call, so
     // the next frame writes those again. A channel the frame does not carry (fewer channels asked for,
     // or sent) is no longer driven: its axis goes to the center and its button is released, so nothing
-    // stays held from a longer frame.
+    // stays held from a longer frame. When no module drives the joystick (the start, the lock lost, a new
+    // module IP, the stop) CenterAll does that for every channel.
     sealed class JoystickMap
     {
         public const int AxisCount = 8;
@@ -66,17 +67,20 @@ namespace ELRSWifiJoystick
         }
 
         // One applied frame (raw values, 0..32767). output null: only the logical state is kept (tests,
-        // or no device).
-        public void Frame(int[] ch, IJoystickOutput? output)
+        // or no device). False when a write to the device failed (the next call writes it again).
+        public bool Frame(int[] ch, IJoystickOutput? output)
         {
             int n = ch.Length;
+            bool ok = true;
             if (output != null)
             {
                 for (int i = 0; i < AxisCount; i++)
                 {
                     int v = i < n ? Math.Clamp(ch[i], 0, AxisMax) : Center;
                     if (shownAxis[i] == v) continue;
-                    shownAxis[i] = output.SetAxis(i, v) ? v : Unknown;
+                    bool done = output.SetAxis(i, v);
+                    shownAxis[i] = done ? v : Unknown;
+                    ok &= done;
                 }
             }
 
@@ -91,9 +95,16 @@ namespace ELRSWifiJoystick
                 if (i >= buttons) continue;
                 int want = p ? 1 : 0;
                 if (shownButton[i] == want) continue;
-                shownButton[i] = output!.SetButton(i, p) ? want : Unknown;
+                bool done = output!.SetButton(i, p);
+                shownButton[i] = done ? want : Unknown;
+                ok &= done;
             }
             mask = m;
+            return ok;
         }
+
+        // No module drives the joystick: every axis to the center, every button released (only what the
+        // device does not show already is written). False when a write failed.
+        public bool CenterAll(IJoystickOutput? output) => Frame(Array.Empty<int>(), output);
     }
 }

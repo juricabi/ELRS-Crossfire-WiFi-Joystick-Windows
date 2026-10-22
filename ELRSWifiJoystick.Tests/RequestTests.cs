@@ -369,10 +369,12 @@ public class RequestTests
         Assert.False(h.Engine.RestartStream());               // nothing to restart
         Assert.Equal(1, h.CountLog("No module to restart"));
         Assert.Empty(h.Posts);
-        // the module IP, while nothing streams
+        // the module IP, while nothing streams (ELRS by its beacon: of unknown kind it could be a Crossfire,
+        // see Restart_UnlockedTargetOfUnknownKind_IsAPlainActivation_NoJoystickEnd)
         h.Engine.SetTarget("10.0.0.1");
         h.Engine.Tick();
         Assert.Single(h.Activated);
+        h.Packet(Frames.Ascii("ELRS"), "10.0.0.1");
         Assert.True(h.Engine.RestartStream());
         Assert.Equal("10.0.0.1", Assert.Single(h.Ends).Ip);
         Assert.Equal(1, h.CountLog("Restarting the stream of 10.0.0.1: 250 Hz, 16 channels"));
@@ -500,7 +502,9 @@ public class RequestTests
     {
         var h = new Harness { ActivateResult = false, RestartResult = true };
         h.Engine.SetTarget("10.0.0.5");
+        h.Packet(Frames.Ascii("ELRS"), "10.0.0.5");          // ELRS: restarted (of unknown kind: only activated)
         Assert.True(h.Engine.RestartStream());
+        Assert.Single(h.Ends);
         h.Clock.Advance(4.1);
         h.Engine.Tick();
         Assert.Equal(1, h.CountLog("NO data arriving"));
@@ -663,6 +667,223 @@ public class RequestTests
         h.Engine.Tick();
         Assert.Empty(h.Posts);
         Assert.Equal(0, h.CountLog("Restarting"));
+    }
+
+    [Fact]
+    public void Request_ChangeAtTheMomentOfALock_StillWaitsForTheKind()
+    {
+        // A change from the UI thread that lands while the first frame is applied must see that frame's
+        // channel count: 16 channels and no beacon may be Crossfire, which is never sent joystick_end.
+        var h = new Harness();
+        h.Engine.Log += m => { if (m.StartsWith("Joystick source locked")) h.Engine.SetRequest(2000, 16); };
+        h.Same(DefIp, 16, 16000);
+        Assert.Empty(h.Ends);
+        Assert.Equal(1, h.CountLog("may be Crossfire"));
+    }
+
+    [Fact]
+    public void Request_ChangedWhileTheLockWasLost_ReachesTheModuleWhenItIsBack()
+    {
+        // A WiFi dropout of more than 3 s releases the lock; the module never stopped streaming, so it sends
+        // no beacon and gets no joystick_begin: the change has to be a restart when it locks again.
+        var h = new Harness();
+        h.Packet(Frames.Ascii("ELRS"), DefIp);               // activated with 250 Hz
+        h.Same(DefIp, 16, 100);
+        h.Clock.Advance(3.5);
+        h.Engine.Tick();                                      // lock lost
+        Assert.True(h.Engine.SetRequest(2000, 16));           // 500 Hz picked meanwhile
+        Assert.Empty(h.Ends);
+        h.Same(DefIp, 16, 100);                               // back, still at 250 Hz: ELRS (beacon), at once
+        Assert.Single(h.Ends);
+        Assert.Equal(2000, Assert.Single(h.RestartBegins).IntervalUs);
+        Assert.Equal(1, h.CountLog("192.168.1.50 still streams 250 Hz, 16 channels, asked for before the change"));
+        for (int i = 0; i < 10; i++) h.Same(DefIp, 16, 100);  // once per change
+        h.Clock.Advance(3.5);
+        h.Engine.Tick();
+        h.Same(DefIp, 16, 100);
+        Assert.Single(h.Ends);
+    }
+
+    [Fact]
+    public void Request_KnownStale_WaitsForTheKind_LikeAnyRestart()
+    {
+        // The kind is forgotten with the session (Stop/Start): 16 channels and no beacon may be Crossfire.
+        var h = new Harness();
+        h.Packet(Frames.Ascii("ELRS"), DefIp);
+        h.Same(DefIp, 16, 100);
+        h.Clock.Advance(3.5);
+        h.Engine.Tick();
+        h.Engine.SetRequest(2000, 16);
+        h.Engine.ResetSessionState();                         // the kinds go, what was asked of it stays
+        h.Same(DefIp, 16, 100);
+        Assert.Empty(h.Ends);
+        Assert.Equal(1, h.CountLog("may be Crossfire"));
+        for (int i = 0; i < 20; i++) { h.Clock.Advance(1); h.Same(DefIp, 16, 100); h.Engine.Tick(); }
+        Assert.Single(h.Ends);
+        Assert.Equal(2000, h.RestartBegins[0].IntervalUs);
+    }
+
+    [Fact]
+    public void Request_OfAModuleThisAppNeverStarted_IsLeftAlone()
+    {
+        // What a module streams when the app finds it already streaming is unknown (the frames don't carry
+        // the rate): only a channel count other than asked restarts it.
+        var h = new Harness();
+        for (int i = 0; i < 60; i++) { h.Clock.Advance(1); h.Same(DefIp, 16, 100); h.Engine.Tick(); }
+        Assert.Empty(h.Posts);
+    }
+
+    [Fact]
+    public void Mismatch_Unknown16_IsRestartedOnceTheKindWindowPassed()
+    {
+        // Relaunched with 8 channels while the module still streams the 16 of the last run (so no beacon).
+        var h = new Harness();
+        h.Engine.SetRequest(4000, 8);
+        h.Same(DefIp, 16, 100);
+        Assert.Empty(h.Ends);                                 // may be Crossfire: wait for its beacon
+        Assert.Equal(1, h.CountLog("may be Crossfire"));
+        for (int i = 0; i < 19; i++) { h.Clock.Advance(1); h.Same(DefIp, 16, 100); }
+        Assert.Empty(h.Ends);
+        h.Clock.Advance(1.1);
+        h.Same(DefIp, 16, 100);                               // 20 s without a Crossfire beacon: no Crossfire
+        Assert.Single(h.Ends);
+        Assert.Equal(8, Assert.Single(h.RestartBegins).Channels);
+        for (int i = 0; i < 30; i++) { h.Clock.Advance(1); h.Same(DefIp, 16, 100); h.Engine.Tick(); }
+        Assert.Single(h.Ends);                                // once per module and session
+        Assert.Equal(1, h.CountLog("may be Crossfire"));
+    }
+
+    [Fact]
+    public void Mismatch_Unknown16_CrossfireBeaconInTheWindow_Never()
+    {
+        var h = new Harness();
+        h.Engine.SetRequest(4000, 8);
+        h.Same(XfIp, 16, 100);
+        h.Clock.Advance(8);
+        h.Packet(Frames.Ascii("VELOCIDRONE"), XfIp);
+        for (int i = 0; i < 60; i++) { h.Clock.Advance(1); h.Same(XfIp, 16, 100); h.Engine.Tick(); }
+        Assert.Empty(h.Ends);
+    }
+
+    [Fact]
+    public void Restart_UnlockedTargetOfUnknownKind_IsAPlainActivation_NoJoystickEnd()
+    {
+        // CLI 'a' with --tx before any data: the module may be a Crossfire that has not beaconed yet
+        // (the firewall blocks UDP, or it just came up). A joystick_begin starts ELRS and Crossfire alike.
+        var h = new Harness();
+        h.Engine.SetTarget(XfIp);
+        h.Same(XfIp, 16, JoystickEngine.XF_PLACEHOLDER);      // radio off: no lock
+        h.Posts.Clear();
+        Assert.True(h.Engine.RestartStream());
+        Assert.Empty(h.Ends);
+        Assert.Equal(new ActivationPost(XfIp, JoystickEngine.ActionBegin, 4000, 16, false), Assert.Single(h.Posts));
+        Assert.Equal(1, h.CountLog("192.168.2.138 has sent no beacon yet (it may be Crossfire, which is never sent " +
+                                   "joystick_end): activating it with 250 Hz, 16 channels"));
+        h.Packet(Frames.Ascii("VELOCIDRONE"), XfIp);
+        Assert.False(h.Engine.RestartStream());               // now known: nothing to restart
+        Assert.Empty(h.Ends);
+        Assert.Equal(0, h.Engine.RestartCount);
+    }
+
+    [Fact]
+    public void AfterStop_QueuedPostsAreDropped_AndALateAnswerArmsNothing()
+    {
+        // A slow module: its activation is in flight when a restart is queued behind it, then Stop. The
+        // restart must not go out after Stop, nor the old answer arm the next session's "no data" hint.
+        var e = new JoystickEngine { OutputOverride = _ => { }, AsyncPostsForTest = true };
+        var clock = new TestClock();
+        e.Clock = () => clock.Now;
+        var log = new List<string>();
+        e.Log += m => { lock (log) log.Add(m); };
+        var posts = new List<ActivationPost>();
+        using var sent = new ManualResetEventSlim();
+        using var answer = new ManualResetEventSlim();
+        e.ActivateOverride = p =>
+        {
+            lock (posts) posts.Add(p);
+            sent.Set();
+            answer.Wait(5000);
+            return true;
+        };
+        var from = new System.Net.IPEndPoint(System.Net.IPAddress.Parse(DefIp), 1);
+        e.Process(Frames.Ascii("ELRS"), from);
+        Assert.True(sent.Wait(5000));                         // joystick_begin: in flight
+        e.Process(Frames.Channels(Enumerable.Repeat(100, 8).ToArray()), from);   // 8 of 16: a restart queued
+        e.Stop();
+        e.ResetSessionState();                                // what the next Start does first
+        answer.Set();
+        Assert.True(e.WaitForPostsForTest(5000));
+        lock (posts) Assert.Equal(new[] { JoystickEngine.ActionBegin }, posts.Select(p => p.Action));
+        clock.Advance(10);
+        e.Tick();
+        lock (log) Assert.DoesNotContain(log, l => l.Contains("NO data arriving"));
+    }
+
+    [Fact]
+    public void ActivationAnswer_RacingTheFirstFrame_DoesNotArmTheNoDataHint()
+    {
+        // ELRS starts streaming before it answers, so the first frame can lock while the answer is being
+        // handled (on a POST thread): here the frame is processed inside the answer's Clock() call.
+        var h = new Harness();
+        bool frameNow = false;
+        h.Engine.ActivateOverride = p => { h.Posts.Add(p); frameNow = true; return true; };
+        h.Engine.Clock = () =>
+        {
+            if (frameNow) { frameNow = false; h.Same(DefIp, 16, 100); }
+            return h.Clock.Now;
+        };
+        h.Packet(Frames.Ascii("ELRS"), DefIp);
+        Assert.Equal(DefIp, h.Engine.Source);
+        h.Clock.Advance(JoystickEngine.SOURCE_TIMEOUT_SEC + 0.1);
+        h.Engine.Tick();
+        h.Clock.Advance(10);
+        h.Engine.Tick();
+        Assert.Equal(0, h.CountLog("NO data arriving"));
+    }
+
+    [Fact]
+    public void ManyModules_TheTablesAndThePostsStayBounded()
+    {
+        // A host that floods beacons from many addresses (or a busy network) can't grow memory or tie up a
+        // thread per address; the module the app is locked to keeps its kind.
+        static System.Net.IPEndPoint At(string ip) => new(System.Net.IPAddress.Parse(ip), 1);
+        var e = new JoystickEngine { OutputOverride = _ => { }, AsyncPostsForTest = true };
+        var log = new List<string>();
+        e.Log += m => { lock (log) log.Add(m); };
+        int inFlight = 0, most = 0;
+        using var answer = new ManualResetEventSlim();
+        e.ActivateOverride = p =>
+        {
+            int n = Interlocked.Increment(ref inFlight);
+            lock (log) most = Math.Max(most, n);
+            answer.Wait(5000);
+            Interlocked.Decrement(ref inFlight);
+            return false;
+        };
+        for (int i = 0; i < 100; i++)
+        {
+            e.Process(Frames.Ascii("ELRS"), At($"10.0.1.{i + 1}"));
+            e.Process(Frames.Channels(Enumerable.Repeat(JoystickEngine.XF_PLACEHOLDER, 16).ToArray()), At($"10.0.2.{i + 1}"));
+        }
+        lock (log)
+        {
+            // a POST to at most 8 modules at a time (the others: at a later beacon), and said only when sent
+            Assert.Equal(8, log.Count(l => l.StartsWith("Discovery beacon")));
+            Assert.Equal(8, log.Count(l => l.Contains("streaming placeholder frames")));
+        }
+        Assert.Equal(ModuleKind.Unknown, e.KindOf("10.0.1.1"));          // forgotten: the table holds 8
+        Assert.Equal(ModuleKind.Elrs, e.KindOf("10.0.1.100"));
+        answer.Set();
+        Assert.True(e.WaitForPostsForTest(5000));
+        Assert.InRange(most, 1, 8);
+
+        // the locked module keeps its kind however many others beacon
+        e = new JoystickEngine { OutputOverride = _ => { }, ActivateOverride = _ => true };
+        e.Process(Frames.Ascii("VELOCIDRONE"), At(XfIp));
+        e.Process(Frames.Channels(Enumerable.Repeat(100, 16).ToArray()), At(XfIp));
+        for (int i = 0; i < 100; i++) e.Process(Frames.Ascii("ELRS"), At($"10.0.1.{i + 1}"));
+        Assert.Equal(ModuleKind.Crossfire, e.KindOf(XfIp));
+        Assert.Equal(ModuleKind.Crossfire, e.SourceKind);
     }
 
     [Fact]

@@ -58,15 +58,18 @@
 
                 <Paragraph Style="{StaticResource H}">Rate &amp; Channels</Paragraph>
                 <Paragraph Style="{StaticResource P}">What the app asks your module for: how often it sends the sticks (1000, 500, 333, 250, 200, 150, 100 or 50 Hz - default 250 Hz) and how many channels (4 to 16 - default 16). A higher rate means lower latency and a little more WiFi traffic and CPU; 250 Hz suits most sims.</Paragraph>
-                <Paragraph Style="{StaticResource P}"><Bold>ExpressLRS</Bold> (3.4.0 and later) sends what is asked for. A change while it streams restarts its stream at once (the app sends "stop", then "start" with the new values) - the joystick holds its position for that moment. If the module still streams another app's settings, the app restarts it once. A module already streaming when the app started may be a Crossfire, so its restart waits up to 20 s for a Crossfire beacon.</Paragraph>
+                <Paragraph Style="{StaticResource P}"><Bold>ExpressLRS</Bold> (3.4.0 and later) sends what is asked for. A change while it streams restarts its stream (the app sends "stop", then "start" with the new values) - the joystick holds its position for that moment. If it streams another channel count than asked (another app's request), the app restarts it once. A module that has sent no beacon yet and streams 16 channels may be a Crossfire, so its restart waits until 20 s passed without a Crossfire beacon; the log says so. A change made while the module was not connected (WiFi dropout, Stop) reaches it the same way when it is back. A module that was already streaming when the app started keeps its rate until you pick another one (the stats show the rate it sends).</Paragraph>
                 <Paragraph Style="{StaticResource P}"><Bold>Crossfire / Tracer</Bold> ignores both: it always sends 16 channels at about 90 Hz. While the app is connected to one, the drop-downs are disabled.</Paragraph>
                 <Paragraph Style="{StaticResource P}">Start the app with <Italic>--rate 500</Italic> (or <Italic>--interval 2000</Italic>) and <Italic>--channels 8</Italic> to change the start values.</Paragraph>
 
                 <Paragraph Style="{StaticResource H}">Module IP &amp; Connect</Paragraph>
-                <Paragraph Style="{StaticResource P}">Leave Module IP blank to auto-discover. To target a specific module (handy if two are on the network), type its IP and press Connect - only that module will drive the joystick.</Paragraph>
+                <Paragraph Style="{StaticResource P}">Leave Module IP blank to auto-discover. To target a specific module (handy if two are on the network), type its IP (like 192.168.4.1, as on the module's WiFi page) and press Connect - only that module will drive the joystick.</Paragraph>
 
-                <Paragraph Style="{StaticResource H}">Fix Firewall</Paragraph>
-                <Paragraph Style="{StaticResource P}">Windows Firewall blocks incoming joystick data by default. The app adds the rule for you - just accept the one-time Windows permission prompt. If a "firewall is blocking" button appears, click it.</Paragraph>
+                <Paragraph Style="{StaticResource H}">When the stream stops</Paragraph>
+                <Paragraph Style="{StaticResource P}">If no data comes for 3 s (radio off, out of range) or you Connect to another module, the vJoy axes go to the center and the buttons are released, so the sim never keeps a stale stick or switch. They follow your sticks again as soon as data is back. Stop and closing the app do the same.</Paragraph>
+
+                <Paragraph Style="{StaticResource H}">Allow in Firewall</Paragraph>
+                <Paragraph Style="{StaticResource P}">Windows Firewall blocks incoming joystick data by default. The app adds the rule for you - just accept the one-time Windows permission prompt. If "Firewall may block joystick data" and the "Allow in Firewall" button appear, click it.</Paragraph>
 
                 <Paragraph Style="{StaticResource H}">Minimize for better performance</Paragraph>
                 <Paragraph Style="{StaticResource P}">Minimizing to the system tray PAUSES the on-screen bars and drops CPU use to nearly zero - the joystick keeps working perfectly in your sim. Recommended while flying.</Paragraph>

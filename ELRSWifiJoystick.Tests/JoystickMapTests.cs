@@ -249,6 +249,57 @@ public class JoystickMapTests
     }
 
     [Fact]
+    public void CenterAll_WritesOnlyWhatIsNotThere_AndSaysWhetherItGotThrough()
+    {
+        var m = new JoystickMap();
+        var o = new FakeOutput();
+        Assert.True(m.Frame(Frame(new[] { 100, Mid, 300, Mid, 500, Mid, 700, Mid }, Hi, Lo, Hi), o));
+        o.Clear();
+        Assert.True(m.CenterAll(o));
+        Assert.Equal(new[] { (0, Mid), (2, Mid), (4, Mid), (6, Mid) }, o.Axes);
+        Assert.Equal(new[] { (0, false), (2, false) }, o.Btns);
+        Assert.Equal(0, m.ButtonMask);
+        o.Clear();
+        Assert.True(m.CenterAll(o));                        // already there: nothing
+        Assert.Empty(o.Axes);
+        Assert.Empty(o.Btns);
+        // after Clear (ResetVJD) everything is written
+        m.Clear();
+        Assert.True(m.CenterAll(o));
+        Assert.Equal(8, o.Axes.Count);
+        Assert.Equal(8, o.Btns.Count);
+        // a failed call: false, and retried by the next one
+        m.Frame(A, o);
+        o.Clear();
+        o.AxisOk = a => a != 3;
+        Assert.False(m.CenterAll(o));
+        o.AxisOk = _ => true;
+        o.Clear();
+        Assert.True(m.CenterAll(o));
+        Assert.Equal(new[] { (3, Mid) }, o.Axes);
+        Assert.True(m.CenterAll(null));                     // no device: only the logical state
+    }
+
+    [Fact]
+    public void Engine_FailingWrites_AreSaidOnce_AndSoIsTheRecovery()
+    {
+        // The device was changed in 'Configure vJoy' or the driver restarted: every write fails. Retried on
+        // every frame (that is the recovery), but said once - not silently "streaming" while the sim gets nothing.
+        var h = new Harness();
+        var dev = new FakeOutput { AxisOk = _ => false, ButtonOk = _ => false };
+        h.Engine.DeviceForTest = dev;
+        for (int i = 0; i < 50; i++) h.Same("192.168.1.50", 16, 100 + i);
+        Assert.Equal(1, h.CountLog("!! Writing to the vJoy device failed"));
+        dev.AxisOk = _ => true;
+        dev.ButtonOk = _ => true;
+        h.Same("192.168.1.50", 16, 500);
+        Assert.Equal(1, h.CountLog("The vJoy device takes the sticks again"));
+        for (int i = 0; i < 5; i++) h.Same("192.168.1.50", 16, 600 + i);
+        Assert.Equal(1, h.CountLog("!! Writing to the vJoy device failed"));
+        Assert.Equal(1, h.CountLog("takes the sticks again"));
+    }
+
+    [Fact]
     public void Engine_DroppedFrames_DoNotTouchTheButtons()
     {
         var h = new Harness();

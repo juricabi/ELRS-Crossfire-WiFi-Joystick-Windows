@@ -169,8 +169,9 @@ namespace ELRSWifiJoystick
 
         public string RequestToolTip => IsCrossfire
             ? CrossfireNote
-            : "What the app asks the module for. ELRS (3.4.0 and later) switches at once: its stream restarts. " +
-              "Crossfire ignores it (16 channels, about 90 Hz).";
+            : "What the app asks the module for. ELRS (3.4.0 and later) takes a change by restarting its stream - " +
+              "at once, or within 20 s for a module that has sent no beacon yet and streams 16 channels (it may be " +
+              "a Crossfire). Crossfire ignores it (16 channels, about 90 Hz).";
 
         internal const string CrossfireNote = "Crossfire ignores these: always 16 channels at about 90 Hz";
         internal const string ButtonsIdleText = "Buttons (CH9-CH16): --";
@@ -221,8 +222,14 @@ namespace ELRSWifiJoystick
                 AppendLog($"Invalid port \"{PortText}\" - using 1-65535.");
                 return;
             }
+            if (!JoystickEngine.TryParseModuleIp(ModuleIp, out string? ip))
+            {
+                AppendLog($"Invalid module IP \"{StreamRequest.Printable(ModuleIp.Trim())}\" - use a.b.c.d " +
+                          "(the IP on the module's WiFi page), or leave it empty to auto-discover.");
+                return;
+            }
             Engine.Port = p;
-            Engine.ActivationIP = string.IsNullOrWhiteSpace(ModuleIp) ? null : ModuleIp.Trim();
+            Engine.ActivationIP = ip;
             Engine.Start();
             IsRunning = true;
             // The rule is per-port, so a custom port needs its own indicator state.
@@ -243,13 +250,14 @@ namespace ELRSWifiJoystick
             }
         }
 
-        // Apply the Module IP live: connect to it immediately (no Stop/Start needed).
+        // Apply the Module IP live: connect to it immediately (no Stop/Start needed). The engine checks it
+        // (a.b.c.d) and logs a mistake.
         private void Connect()
         {
             if (!Engine.IsRunning)
                 StartEngine();
             else
-                Engine.SetTarget(string.IsNullOrWhiteSpace(ModuleIp) ? null : ModuleIp.Trim());
+                Engine.SetTarget(ModuleIp);
         }
 
         private void FixFirewall() => EnsureFirewallAsync();

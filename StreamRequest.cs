@@ -80,11 +80,12 @@ namespace ELRSWifiJoystick
         }
 
         // A plain decimal integer (surrounding spaces allowed). The error names the supported values,
-        // in the same words as the Linux version's.
+        // in the same words as the Linux version's; only the error's copy of the text is cut short.
         private static bool TryParseNumber(string? text, long min, long max, string use, out long value, out string error)
         {
-            string t = Printable(text?.Trim() ?? "");
-            if (!long.TryParse(t, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out value))
+            string raw = text?.Trim() ?? "";
+            string t = Printable(raw);
+            if (!long.TryParse(raw, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out value))
             {
                 error = $"\"{t}\" is not a number - use {use}";
                 return false;
@@ -98,8 +99,8 @@ namespace ELRSWifiJoystick
             return true;
         }
 
-        // Keep an error line one clean line whatever was typed.
-        private static string Printable(string s)
+        // Keep an error line one clean line whatever was typed: at most 40 characters, no control characters.
+        internal static string Printable(string s)
         {
             if (s.Length > 40) s = s.Substring(0, 40);
             var c = s.ToCharArray();

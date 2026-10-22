@@ -310,6 +310,67 @@ public class MainViewModelTests
     }
 
     [Fact]
+    public void PortInUse_LeavesThePortEditable()
+    {
+        // The error tells the user to change the port: the box must be enabled when it says so.
+        const int port = 27409;
+        using var blocker = new System.Net.Sockets.UdpClient(port);
+        var vm = NewVm(out _, port);
+        vm.Engine.SkipVJoyForTest = true;
+        using var error = new ManualResetEventSlim();
+        vm.Engine.StateChanged += (s, _) => { if (s == EngineState.Error) error.Set(); };
+        vm.StartStopCommand.Execute(null);
+        try
+        {
+            Assert.True(error.Wait(5000));
+            Assert.Equal(EngineState.Error, vm.State);
+            Assert.False(vm.IsRunning);
+            Assert.True(vm.IsPortEditable);
+        }
+        finally
+        {
+            vm.Shutdown();
+        }
+    }
+
+    [Fact]
+    public void Start_WithAModuleIpThatIsNoIPv4Address_SaysSo_AndDoesNotStart()
+    {
+        var vm = NewVm(out _, 27415);
+        vm.Engine.SkipVJoyForTest = true;
+        vm.ModuleIp = "elrs_tx.local";
+        try
+        {
+            vm.StartStopCommand.Execute(null);
+            Assert.False(vm.Engine.IsRunning);
+            Assert.Contains("Invalid module IP \"elrs_tx.local\" - use a.b.c.d", vm.LogText);
+        }
+        finally
+        {
+            vm.Shutdown();
+        }
+    }
+
+    [Fact]
+    public void Connect_WhileStreaming_LeavesTheGreenBanner_AndCentersTheJoystick()
+    {
+        var vm = NewVm(out _);
+        vm.Engine.ActivateOverride = _ => false;            // the new module does not answer
+        var dev = new FakeOutput();
+        vm.Engine.DeviceForTest = dev;
+        Feed(vm, Frames.Channels(Enumerable.Repeat(32767, 16).ToArray()), "10.0.0.1");
+        Assert.Equal("Connected - streaming", vm.BannerTitle);
+        vm.ModuleIp = "10.0.0.2";
+        vm.Engine.SetTarget(vm.ModuleIp);                   // what Connect does while running
+        Assert.Equal("Searching for module...", vm.BannerTitle);
+        Assert.Equal("connecting to 10.0.0.2", vm.BannerDetail);
+        Assert.False(vm.IsStreaming);
+        vm.Engine.Tick();
+        Assert.Equal(0, vm.Engine.ButtonMask);
+        Assert.Equal(8, dev.Axes.Count(a => a.Value == JoystickMap.Center));
+    }
+
+    [Fact]
     public void TrayText_ReflectsStreamingSource()
     {
         var vm = NewVm(out _);

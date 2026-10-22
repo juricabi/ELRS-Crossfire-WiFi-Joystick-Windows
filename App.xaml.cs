@@ -53,7 +53,7 @@ namespace ELRSWifiJoystick
             var opt = AppArgs.Parse(args);
             if (opt.Errors.Count > 0)
                 MessageBox.Show(
-                    "Command line:\n\n" + string.Join("\n", opt.Errors) + "\n\nUsing the default for these.",
+                    "Command line:\n\n" + string.Join("\n", opt.Errors) + "\n\nThese were ignored. " + opt.Summary,
                     "ELRS / Crossfire WiFi Joystick", MessageBoxButton.OK, MessageBoxImage.Warning);
 
             var window = new MainWindow(opt.Port, opt.TxIp, opt.IntervalUs, opt.Channels);
