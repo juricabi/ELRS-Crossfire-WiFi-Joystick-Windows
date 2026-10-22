@@ -1,12 +1,12 @@
 using System;
-using System.Text;
+using System.IO;
 using System.Threading;
 
 namespace ELRSWifiJoystick
 {
     // Console front-end over the exact same JoystickEngine the GUI uses: discovery,
-    // activation, single-source lock, vJoy output, firewall handling, stats - just
-    // rendered as text. Trimmed self-contained exe (~6 MB) with a fast start.
+    // activation, the request (rate/channels), single-source lock, vJoy output, firewall
+    // handling, stats - just rendered as text. Trimmed self-contained exe (~9 MB), fast start.
     static class CliProgram
     {
         private static readonly object gate = new();
@@ -30,18 +30,15 @@ namespace ELRSWifiJoystick
                 return 0;
             }
 
-            int port = 11000;
-            string? txIp = null;
-            bool noFirewall = false;
-            for (int i = 0; i < args.Length; i++)
+            var opt = CliOptions.Parse(args);
+            if (opt.Error != null)
             {
-                string a = args[i];
-                if (a is "--help" or "-h" or "/?") { PrintUsage(); return 0; }
-                else if ((a is "--tx" or "--crossfire" or "--activate") && i + 1 < args.Length) txIp = args[++i];
-                else if (a == "--no-firewall") noFirewall = true;
-                else if (int.TryParse(a, out int p) && p > 0 && p < 65536) port = p;
-                else { Console.Error.WriteLine($"Unknown argument: {a}"); PrintUsage(); return 2; }
+                Console.Error.WriteLine(opt.Error);
+                PrintUsage();
+                return 2;
             }
+            if (opt.Help) { PrintUsage(); return 0; }
+            int port = opt.Port;
 
             // Shared with the GUI on purpose: both would fight over the UDP port and the
             // vJoy device, so only one of the two may run.
@@ -55,14 +52,19 @@ namespace ELRSWifiJoystick
             live = !Console.IsOutputRedirected;
             try { Console.Title = "ELRS / TBS Crossfire WiFi Joystick (CLI)"; } catch { }
 
-            WriteLine(ConsoleColor.Cyan, $"ELRS / TBS Crossfire WiFi Joystick CLI v3.2  -  listening on UDP {port}");
+            WriteLine(ConsoleColor.Cyan, $"ELRS / TBS Crossfire WiFi Joystick CLI v3.3  -  listening on UDP {port}");
             WriteLine(ConsoleColor.Gray, "  Features : auto-discovery (ELRS + Crossfire/Tracer) | single-source lock");
-            WriteLine(ConsoleColor.Gray, "             vJoy output ~90-100 Hz | rate & jitter stats | firewall auto-rule");
+            WriteLine(ConsoleColor.Gray, "             vJoy: CH1-8 axes, CH9-16 buttons 1-8 | rate & jitter stats | firewall auto-rule");
+            WriteLine(ConsoleColor.Gray, "             ELRS streams at the rate asked for: 250 Hz by default, adjustable (r, --rate)");
             WriteLine(ConsoleColor.Gray, "             auto-reconnect when the module drops and comes back");
-            WriteLine(ConsoleColor.Gray, "  Keys     : [s] start/stop  [t] module IP / connect  [p] port  [f] firewall  [q] quit");
+            WriteLine(ConsoleColor.Gray, $"  Request  : {StreamRequest.Describe(opt.IntervalUs)}, {opt.Channels} channels" +
+                                         "  (Crossfire ignores it: always 16 channels, about 90 Hz)");
+            WriteLine(ConsoleColor.Gray, "  Keys     : [s] start/stop  [t] module IP / connect  [p] port  [r] rate  [c] channels");
+            WriteLine(ConsoleColor.Gray, "             [a] restart stream  [f] firewall  [q] quit");
             WriteLine(ConsoleColor.DarkGray, "  Ctrl+C also quits. --help for command-line options.");
 
-            var engine = new JoystickEngine { Port = port, ActivationIP = txIp };
+            var engine = new JoystickEngine { Port = port, ActivationIP = opt.TxIp };
+            engine.SetRequest(opt.IntervalUs, opt.Channels);
             engine.Log += msg => Log(msg);
             engine.StateChanged += (s, d) =>
             {
@@ -80,7 +82,7 @@ namespace ELRSWifiJoystick
             engine.ChannelsUpdated += ch => latest = ch;
             engine.StatsUpdated += (hz, jit, cnt) => { rate = hz; jitter = jit; };
 
-            if (!noFirewall)
+            if (!opt.NoFirewall)
                 FirewallHelper.EnsureAllowed(port, m => Log(m));
 
             var quit = new ManualResetEventSlim();
@@ -89,7 +91,7 @@ namespace ELRSWifiJoystick
             engine.Start();
 
             // Same commands two ways: single keys on an interactive console, or lines on
-            // a redirected stdin ("s" / "t <ip>" / "f" / "q") so the CLI is scriptable.
+            // a redirected stdin ("s" / "t <ip>" / "rate 250" / "q") so the CLI is scriptable.
             bool keys = !Console.IsInputRedirected;
             if (!keys)
             {
@@ -103,14 +105,21 @@ namespace ELRSWifiJoystick
                     string? line;
                     while ((line = input.ReadLine()) != null)
                     {
-                        var parts = line.Trim().Split(' ', 2);
-                        switch (parts[0].ToLowerInvariant())
+                        var (verb, arg) = CliCommand.Parse(line);
+                        switch (verb)
                         {
-                            case "q": case "quit": quit.Set(); return;
-                            case "s": ToggleEngine(engine); break;
-                            case "t": SetTargetCmd(engine, parts.Length > 1 ? parts[1] : null); break;
-                            case "p": SetPortCmd(engine, parts.Length > 1 ? parts[1] : null); break;
-                            case "f": FixFirewall(engine); break;
+                            case "quit": quit.Set(); return;
+                            case "toggle": ToggleEngine(engine); break;
+                            case "start": if (!engine.IsRunning) ToggleEngine(engine); break;
+                            case "stop": if (engine.IsRunning) ToggleEngine(engine); break;
+                            case "target": SetTargetCmd(engine, arg); break;
+                            case "port": SetPortCmd(engine, arg); break;
+                            case "firewall": FixFirewall(engine); break;
+                            case "rate": CliRequest.SetRate(engine, arg, m => Log(m)); break;
+                            case "interval": CliRequest.SetInterval(engine, arg, m => Log(m)); break;
+                            case "channels": CliRequest.SetChannels(engine, arg, m => Log(m)); break;
+                            case "restart": engine.RestartStream(); break;
+                            case "status": Log(StatusText(engine) is { Length: > 0 } st ? st.Trim() : "Not streaming."); break;
                             case "": break;
                             default: Log($"Unknown command: {line.Trim()}"); break;
                         }
@@ -121,7 +130,7 @@ namespace ELRSWifiJoystick
             // Interactive: live status line at 5 Hz. Redirected: a stats line every 2 s.
             while (!quit.Wait(live ? 200 : 2000))
             {
-                DrawStatus();
+                DrawStatus(engine);
                 while (keys && Console.KeyAvailable)
                 {
                     char k = char.ToLowerInvariant(Console.ReadKey(intercept: true).KeyChar);
@@ -129,6 +138,9 @@ namespace ELRSWifiJoystick
                     else if (k == 's') ToggleEngine(engine);
                     else if (k == 't') PromptTarget(engine);
                     else if (k == 'p') PromptPort(engine);
+                    else if (k == 'r') PromptRate(engine);
+                    else if (k == 'c') PromptChannels(engine);
+                    else if (k == 'a') engine.RestartStream();
                     else if (k == 'f') FixFirewall(engine);
                 }
             }
@@ -158,14 +170,7 @@ namespace ELRSWifiJoystick
         // 't' - mirror of the GUI Module IP box + Connect button.
         private static void PromptTarget(JoystickEngine engine)
         {
-            ClearStatusLine();
-            lock (gate)
-            {
-                Console.ForegroundColor = ConsoleColor.Cyan;
-                Console.Write("Module IP (empty = auto-discover): ");
-                Console.ResetColor();
-            }
-            SetTargetCmd(engine, Console.ReadLine());
+            SetTargetCmd(engine, Prompt("Module IP (empty = auto-discover): "));
         }
 
         private static void SetTargetCmd(JoystickEngine engine, string? ip)
@@ -189,14 +194,7 @@ namespace ELRSWifiJoystick
                 Log("Stop first ('s') - the port can only be changed while stopped.");
                 return;
             }
-            ClearStatusLine();
-            lock (gate)
-            {
-                Console.ForegroundColor = ConsoleColor.Cyan;
-                Console.Write("UDP port (1-65535): ");
-                Console.ResetColor();
-            }
-            SetPortCmd(engine, Console.ReadLine());
+            SetPortCmd(engine, Prompt("UDP port (1-65535): "));
         }
 
         private static void SetPortCmd(JoystickEngine engine, string? text)
@@ -219,6 +217,35 @@ namespace ELRSWifiJoystick
             engine.Start();
         }
 
+        // 'r' - mirror of the GUI Rate drop-down (any 10-1000 Hz here). Empty input cancels.
+        private static void PromptRate(JoystickEngine engine)
+        {
+            string? text = Prompt($"Rate in Hz (1000 500 333 250 200 150 100 50, any 10-1000; now " +
+                                  $"{StreamRequest.Describe(engine.IntervalUs)}, empty = cancel): ");
+            if (string.IsNullOrWhiteSpace(text)) Log("Rate unchanged.");
+            else CliRequest.SetRate(engine, text, m => Log(m));
+        }
+
+        // 'c' - mirror of the GUI Channels drop-down. Empty input cancels.
+        private static void PromptChannels(JoystickEngine engine)
+        {
+            string? text = Prompt($"Channels (4-16; now {engine.Channels}, empty = cancel): ");
+            if (string.IsNullOrWhiteSpace(text)) Log("Channels unchanged.");
+            else CliRequest.SetChannels(engine, text, m => Log(m));
+        }
+
+        private static string? Prompt(string question)
+        {
+            ClearStatusLine();
+            lock (gate)
+            {
+                Console.ForegroundColor = ConsoleColor.Cyan;
+                Console.Write(question);
+                Console.ResetColor();
+            }
+            return Console.ReadLine();
+        }
+
         // 'f' - mirror of the GUI "Allow in Firewall" button.
         private static void FixFirewall(JoystickEngine engine)
         {
@@ -229,28 +256,27 @@ namespace ELRSWifiJoystick
                 ok ? ConsoleColor.Green : ConsoleColor.Yellow);
         }
 
-        private static string StatusText()
+        private static string StatusText(JoystickEngine engine)
         {
             var ch = latest;
             if (!streaming || ch == null) return "";
-            var sb = new StringBuilder();
-            sb.Append($"  {rate,3:0} Hz  {jitter,4:0.0} ms  |");
-            string[] n = { "R", "P", "T", "Y", "A1", "A2", "A3", "A4" };
-            for (int i = 0; i < 8 && i < ch.Length; i++)
-                sb.Append($" {n[i]}:{Math.Clamp(ch[i], 0, 32767) * 100 / 32767,3}%");
-            return sb.ToString();
+            return CliRequest.FormatStatus(rate, jitter, ch, StreamRequest.IntervalHz(engine.IntervalUs),
+                                           engine.SourceKind == ModuleKind.Crossfire, engine.ButtonMask);
         }
 
-        private static void DrawStatus()
+        private static void DrawStatus(JoystickEngine engine)
         {
-            string s = StatusText();
+            string s = StatusText(engine);
             if (s.Length == 0) { if (live) ClearStatusLine(); return; }
             lock (gate)
             {
                 if (live)
                 {
+                    // One line, never wrapped: a wrapped line can't be redrawn in place.
+                    int w = SafeWidth() - 1;
+                    if (s.Length > w) s = s.Substring(0, w);
                     Console.ForegroundColor = ConsoleColor.Green;
-                    Console.Write("\r" + s.PadRight(SafeWidth() - 1));
+                    Console.Write("\r" + s.PadRight(w));
                     Console.ResetColor();
                     statusShown = true;
                 }
@@ -310,19 +336,34 @@ namespace ELRSWifiJoystick
         {
             Console.WriteLine(@"ELRS / TBS Crossfire WiFi Joystick CLI
 
-Usage: ELRSWifiJoystickCli [port] [--tx <module-ip>] [--no-firewall]
+Usage: ELRSWifiJoystickCli [port] [--tx <module-ip>] [--rate HZ | --interval US]
+                           [--channels N] [--no-firewall]
 
   port            UDP port to listen on (default 11000)
   --tx <ip>       Activate a specific module immediately instead of waiting
                   for its discovery beacon (aliases: --crossfire, --activate)
+  --rate HZ       Updates per second to ask the module for: 1000 500 333 250
+                  200 150 100 50 (default 250); any 10 to 1000 works
+  --interval US   The same as an interval in microseconds: 1000 to 100000
+                  (default 4000 = 250 Hz)
+  --channels N    Channels to ask for: 4 to 16 (default 16)
   --no-firewall   Skip the Windows Firewall check/rule
   --help          This help
 
+ELRS (3.4.0 and later) streams the rate and channels asked for; a change while
+it streams restarts its stream. Crossfire ignores both: it always sends 16
+channels at about 90 Hz. CH1-CH8 are the vJoy axes (X Y RX RY RZ Z SL0 SL1),
+CH9-CH16 joystick buttons 1-8 (pressed above 75 %).
+
 While running (keys on a console, or lines on redirected stdin):
-  s               Start / stop
+  s               Start / stop (stdin also: start, stop)
   t [ip]          Set module IP and connect (empty = auto-discover)
   p [port]        Change the UDP port (only while stopped; applying starts)
+  r [hz]          Rate to ask for (stdin also: rate <hz>, interval <us>)
+  c [n]           Channels to ask for (stdin also: channels <n>)
+  a               Restart the module's stream with the request (stdin: restart)
   f               Re-check / add the firewall rule
+  status          Print the status line (stdin only)
   q               Quit
 
 Requires the vJoy driver (vjoystick.sourceforge.net). Put the ELRS or TBS

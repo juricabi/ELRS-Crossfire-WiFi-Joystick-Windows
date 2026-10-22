@@ -1,4 +1,4 @@
-﻿ELRS / TBS Crossfire WiFi Joystick for Windows  -  v3.2
+﻿ELRS / TBS Crossfire WiFi Joystick for Windows  -  v3.3
 =========================================================
 
 Use your ExpressLRS or TBS Crossfire/Tracer radio as a wireless joystick on
@@ -19,6 +19,19 @@ SETUP
    - The banner turns GREEN "Connected - streaming" and the axis bars move.
    - Or type the module's IP into "Module IP" and click Connect.
 4. In your simulator, select "vJoy Device" as the controller and calibrate.
+   CH1-CH8 are the vJoy axes, CH9-CH16 joystick buttons 1-8 (a switch is
+   pressed above 75%). The vJoy device needs 8 buttons (Configure vJoy).
+
+RATE & CHANNELS
+---------------
+The Rate and Channels boxes say what the module is asked for: 250 Hz and
+16 channels by default (1000, 500, 333, 250, 200, 150, 100 or 50 Hz;
+4 to 16 channels).
+- ExpressLRS (3.4.0 and later) switches at once: its stream restarts.
+- Crossfire / Tracer ignores both - always 16 channels at about 90 Hz - so
+  the boxes are greyed out while it is connected.
+- Start values from the command line, e.g.:
+      ELRSWifiJoystick.exe --rate 500 --channels 8
 
 TIPS
 ----
@@ -28,6 +41,7 @@ TIPS
 - Minimize to the system tray while flying - the joystick keeps working and
   CPU use drops to almost nothing.
 - The module keeps broadcasting until it is powered off; that's normal
-  (the protocol has no remote stop command).
+  (closing the app only stops reading it).
+- On Linux? https://github.com/juricabi/elrs-crossfire-wifi-joystick-linux
 
 Project & source: https://github.com/juricabi/ELRS-Crossfire-WiFi-Joystick-Windows

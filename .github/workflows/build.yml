@@ -1,0 +1,67 @@
+name: build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    env:
+      DOTNET_CLI_TELEMETRY_OPTOUT: 1
+      DOTNET_NOLOGO: 1
+      # lib/ needs vJoyInterfaceWrap.dll and vJoyInterface.dll (not in git). They come from the vJoy
+      # 2.1.9.1 installer (an Inno Setup 6.0 installer: its {app}\x64 folder holds both), pinned by hash.
+      VJOY_URL: https://github.com/jshafer817/vJoy/releases/download/v2.1.9.1/vJoySetup.exe
+      VJOY_SHA256: f103ced4e7ff7ccb49c8415a542c56768ed4da4fea252b8f4ffdac343074654a
+    steps:
+      - uses: actions/checkout@v4
+
+      # The projects target net6.0-windows: the tests need the .NET 6 runtime (Windows Desktop
+      # included); the newest SDK builds.
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            6.0.x
+            8.0.x
+
+      - name: vJoy libraries
+        shell: pwsh
+        run: |
+          choco install innoextract --no-progress -y
+          if ($LASTEXITCODE -ne 0) { throw "choco install innoextract failed ($LASTEXITCODE)" }
+          Invoke-WebRequest -Uri $env:VJOY_URL -OutFile vJoySetup.exe
+          $hash = (Get-FileHash vJoySetup.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($hash -ne $env:VJOY_SHA256) { throw "vJoySetup.exe has SHA256 $hash, expected $env:VJOY_SHA256" }
+          innoextract --silent --output-dir vjoy vJoySetup.exe
+          if ($LASTEXITCODE -ne 0) { throw "innoextract failed ($LASTEXITCODE)" }
+          foreach ($dll in "vJoyInterfaceWrap.dll", "vJoyInterface.dll") {
+            $src = Join-Path vjoy "app/x64/$dll"
+            if (-not (Test-Path $src)) { throw "$dll not found in the installer" }
+            Copy-Item $src lib/
+          }
+          Get-ChildItem lib
+
+      - name: Build (GUI)
+        run: dotnet build ELRSWifiJoystick.csproj -c Release
+
+      - name: Build (CLI)
+        run: dotnet build ELRSWifiJoystick.Cli/ELRSWifiJoystick.Cli.csproj -c Release
+
+      - name: Test
+        # Major: use .NET 6 when it is there, else the next newer runtime (never needed with setup-dotnet 6.0.x)
+        env:
+          DOTNET_ROLL_FORWARD: Major
+        run: dotnet test ELRSWifiJoystick.Tests/ELRSWifiJoystick.Tests.csproj -c Release --logger "trx;LogFileName=results.trx" --results-directory TestResults
+
+      - name: Test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: TestResults
+          if-no-files-found: ignore

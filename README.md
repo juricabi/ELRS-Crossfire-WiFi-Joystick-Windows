@@ -4,6 +4,7 @@
 
 **Use your ExpressLRS or TBS Crossfire/Tracer radio as a wireless joystick on Windows — with a live visual app**
 
+[![build](https://github.com/juricabi/ELRS-Crossfire-WiFi-Joystick-Windows/actions/workflows/build.yml/badge.svg)](https://github.com/juricabi/ELRS-Crossfire-WiFi-Joystick-Windows/actions/workflows/build.yml)
 [![.NET](https://img.shields.io/badge/.NET-6.0-blue.svg)](https://dotnet.microsoft.com/download/dotnet/6.0)
 [![Platform](https://img.shields.io/badge/Platform-Windows-lightgrey.svg)](https://www.microsoft.com/windows)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
@@ -17,11 +18,17 @@ This app turns your **ExpressLRS (ELRS)** *or* **TBS Crossfire / Tracer** TX mod
 Both radios use the same "WiFi joystick" protocol (the one VelociDrone Mobile speaks), so setup is identical: put the module on your WiFi and run the app. The only difference is the discovery beacon — ELRS announces itself as `ELRS`, Crossfire as `VELOCIDRONE` — and the app handles both automatically.
 
 > **v3.0** is a ground-up WPF interface: vector-rendered, so it is pixel-perfect on **any** display scale (100/125/150/200%), with GPU-composited live axis bars, packet rate + jitter, connection status, and one-click firewall setup. It still auto-discovers your module and just works.
+>
+> **v3.3**: the **rate and channel count are settings** - ELRS is asked for **250 Hz × 16 channels** by default (was 100 Hz × 8), adjustable live - and **CH9-CH16 are joystick buttons 1-8**.
+
+> 🐧 **On Linux?** [elrs-crossfire-wifi-joystick-linux](https://github.com/juricabi/elrs-crossfire-wifi-joystick-linux) does the same there (uinput joystick, terminal UI and a web page), with the same protocol behaviour, defaults and axis order.
 
 ## ✨ Features
 
 - 🎮 **Virtual joystick** - creates a Windows vJoy device from your radio's WiFi output
 - 📡 **ELRS + Crossfire/Tracer** - full support for the ELRS/Crossfire WiFi joystick protocol (16 channels, 15-bit)
+- ⚡ **Adjustable rate & channels** - asks ELRS for 250 Hz × 16 channels by default; pick 1000/500/333/250/200/150/100/50 Hz and 4-16 channels, applied live (see [Rate & channels](#-rate--channels))
+- 🔘 **Buttons** - CH1-CH8 are the 8 vJoy axes, CH9-CH16 joystick buttons 1-8 (with hysteresis, so a switch never flickers)
 - 🖥️ **Live visual app (WPF)** - real-time GPU-composited axis bars, packet **rate + jitter**, and connection status at a glance
 - 🌐 **Auto-discovery** - detects and activates ELRS *and* TBS Crossfire/Tracer modules automatically (or type the IP)
 - 🛡️ **One-click firewall** - detects and adds the required Windows Firewall rule for you (the #1 "no data" cause)
@@ -30,7 +37,7 @@ Both radios use the same "WiFi joystick" protocol (the one VelociDrone Mobile sp
 - ❓ **Built-in Help** - a Help button with short tutorials for every feature
 - 🪶 **Light & CPU-friendly** - minimize to the system tray to pause the on-screen bars and drop CPU to ~1% (the joystick keeps working); single-instance
 - 📦 **No install** - self-contained single-file `.exe`, runs on Windows 7 SP1 through Windows 11 (64-bit)
-- ⌨️ **CLI edition too** - `ELRSWifiJoystickCli.exe` (~9 MB, instant start): the same engine and features in a console app - live channel readout, stats, firewall handling, `--tx`, plus interactive keys while running (`s` start/stop, `t` module IP/connect, `p` port, `f` firewall, `q` quit; also scriptable via stdin)
+- ⌨️ **CLI edition too** - `ELRSWifiJoystickCli.exe` (~9 MB, instant start): the same engine and features in a console app - live channel readout, stats, firewall handling, `--tx`, `--rate`, `--channels`, plus interactive keys while running (`s` start/stop, `t` module IP/connect, `p` port, `r` rate, `c` channels, `a` restart the stream, `f` firewall, `q` quit; also scriptable via stdin)
 - 🖥️ **DPI-perfect** - WPF vector rendering: crisp on every display scale (100/125/150/200%), including per-monitor DPI
 
 ## 🚀 Quick Start
@@ -96,9 +103,12 @@ Both radios use the same "WiFi joystick" protocol (the one VelociDrone Mobile sp
 
 The engine and the view model have a full xUnit test suite (`ELRSWifiJoystick.Tests/`)
 covering the protocol (beacons, channel frames, malformed packets), the source-lock state
-machine, activation throttling, rate/jitter math, socket-level lifecycle (restart,
-port-in-use, clean shutdown), and the UI state mapping (banner, axis bars, log capping).
-Tests inject a fake clock/output/activator, so they need neither vJoy nor a module:
+machine, activation throttling, the request (rate/channels) and stream restarts, the channel
+to axis/button mapping, rate/jitter math, socket-level lifecycle (restart, port-in-use, clean
+shutdown), both command lines, and the UI state mapping (banner, axis bars, drop-downs, log
+capping). Tests inject a fake clock/output/activator, so they need neither vJoy nor a module.
+GitHub Actions builds the GUI and the CLI and runs the tests on every push
+(`.github/workflows/build.yml`, which takes the vJoy DLLs from the vJoy 2.1.9.1 installer):
 
 ```bash
 dotnet test ELRSWifiJoystick.Tests -c Release
@@ -175,37 +185,75 @@ the "Velocidrone Mobile" support built into the TBS WiFi module.
      **Connect** to target a specific module (skips the beacon wait; find the IP on the
      module's WiFi web page).
    - **Port** — the UDP port (default `11000`); change it while stopped.
+   - **Rate / Channels** — what the module is asked for (default **250 Hz**, **16 channels**);
+     a change applies at once (see [Rate & channels](#-rate--channels)). Disabled while
+     connected to a Crossfire module, which ignores them.
    - **Fix Firewall** — appears only if the firewall is blocking data.
    - **Help** — opens short tutorials for every feature.
    - Minimizing to the tray pauses the on-screen bars and drops CPU to ~1% — the joystick
      keeps working, so **minimize while flying** for best performance.
    - Closing the window centers the vJoy axes and releases the device.
 
-**Command-line (optional):** `ELRSWifiJoystick.exe [port] [--tx <module-ip>]` — e.g.
-`ELRSWifiJoystick.exe --tx 192.168.2.138` pre-fills the module IP on launch.
+**Command-line (optional):** `ELRSWifiJoystick.exe [port] [--tx <module-ip>] [--rate HZ | --interval US] [--channels N]`
+— e.g. `ELRSWifiJoystick.exe --tx 192.168.2.138` pre-fills the module IP on launch, and
+`--rate 500 --channels 8` starts with 500 Hz and 8 channels. A value that is not supported is
+reported in a message box and the default is used.
 
-> **Stopping the module's stream:** the ELRS/Crossfire WiFi module has **no remote stop
-> command** — once activated it keeps broadcasting channel data until it is powered off,
-> rebooted, or its WiFi drops. Closing this app only stops *reading* the stream; it does not
-> (and cannot) stop the module from sending. This is a module-firmware behaviour, not an app
-> limitation.
+> **Stopping the module's stream:** once activated, the module keeps broadcasting channel data
+> until it is powered off, rebooted, or its WiFi drops. Closing this app only stops *reading*
+> the stream. Crossfire has **no remote stop command**; ELRS has one (`joystick_end`), which
+> the app sends only to restart the stream with a new rate or channel count.
+
+## ⚡ Rate & channels
+
+The activation POST asks the module for an update **rate** (as an interval) and a **channel
+count** - "the request". Defaults: **250 Hz** (4000 µs) and **16 channels**.
+
+| Rate | 1000 Hz | 500 Hz | 333 Hz | **250 Hz** | 200 Hz | 150 Hz | 100 Hz | 50 Hz |
+|------|---------|--------|--------|------------|--------|--------|--------|-------|
+| Interval (µs) | 1000 | 2000 | 3000 | **4000** | 5000 | 6667 | 10000 | 20000 |
+
+Channels: **4 to 16**. The GUI offers these values in two drop-downs; on the command line
+(`--rate`, `--interval`, `--channels`, GUI and CLI) any rate from 10 to 1000 Hz (interval
+1000-100000 µs) works.
+
+- **ExpressLRS** (3.4.0 and later) streams what is asked for. It takes a new request only
+  while it is not streaming, so a change while it streams **restarts its stream**: the app
+  POSTs `action=joystick_end`, then `joystick_begin` with the new values. The joystick holds
+  its position for that moment and the source lock stays. If an ELRS module (known by its
+  beacon, or by a channel count Crossfire never sends) streams another channel count than
+  asked - another app's request - the app restarts it once per session.
+  A module the app hasn't heard a beacon from yet that streams 16 channels might be Crossfire
+  (an ELRS module stops beaconing while it streams; Crossfire beacons about every 8 s): its
+  restart waits until 20 s of streaming passed without a Crossfire beacon, and the log says so.
+- **TBS Crossfire / Tracer** starts on the same request but **ignores both values**: it always
+  sends 16 channels at about 90 Hz. The app never sends it `joystick_end`; while connected to
+  one, the drop-downs are disabled and the stats say "Crossfire: its own rate".
+- The stats show what arrives next to what was asked: `Rate: 249 Hz (asked 250)`, and
+  `8 ch (asked 16)` when the channel count differs.
+- CLI: `r` / `c` keys (or `rate <hz>`, `interval <us>`, `channels <n>` on stdin) change it,
+  `a` (`restart`) restarts the stream with it.
+
+A higher rate means lower latency, a bit more WiFi traffic and CPU; 250 Hz suits most sims.
 
 ## 📋 Channel Mapping
 
-The application maps ExpressLRS channels to vJoy axes:
+The application maps the radio's channels to the vJoy device (the same order as the Linux
+version, so bindings carry over):
 
-| ExpressLRS Channel | vJoy Axis | Description |
-|-------------------|-----------|-------------|
-| 0 (Roll)          | X         | Aileron/Roll control |
-| 1 (Pitch)         | Y         | Elevator/Pitch control |
-| 2 (Throttle)      | RX        | Throttle control |
-| 3 (Yaw)           | RY        | Rudder/Yaw control |
-| 4                 | RZ        | Auxiliary control |
-| 5                 | Z         | Auxiliary control |
-| 6                 | Slider 0  | Auxiliary control |
-| 7                 | Slider 1  | Auxiliary control |
+| Channel | vJoy | Description |
+|---------|------|-------------|
+| CH1 (Roll)     | X axis    | Aileron/Roll control |
+| CH2 (Pitch)    | Y axis    | Elevator/Pitch control |
+| CH3 (Throttle) | RX axis   | Throttle control |
+| CH4 (Yaw)      | RY axis   | Rudder/Yaw control |
+| CH5            | RZ axis   | Auxiliary control |
+| CH6            | Z axis    | Auxiliary control |
+| CH7            | Slider 0  | Auxiliary control |
+| CH8            | Slider 1  | Auxiliary control |
+| CH9 - CH16     | Buttons 1 - 8 | Switches: pressed at 75 % (raw ≥ 24576), released below 62.5 % (raw < 20480) |
 
-**Note:** Values are passed directly from the module (15-bit range: 0-32767) to vJoy without scaling or filtering for maximum precision and minimal latency. This applies to both ELRS and Crossfire, which share the same channel encoding.
+**Note:** Axis values are passed directly from the module (15-bit range: 0-32767) to vJoy without scaling or filtering for maximum precision and minimal latency. This applies to both ELRS and Crossfire, which share the same channel encoding. The gap between the button thresholds is hysteresis, so a switch sitting near one never flickers (like the ELRS BLE joystick). A channel the module doesn't send (fewer channels asked for) is not driven: its axis is centered and its button released. The vJoy device needs **8 buttons** for CH9-CH16 (the default; check in *Configure vJoy*) - the app uses as many as it has and logs how many.
 
 ## 🔧 Troubleshooting
 
@@ -216,6 +264,9 @@ The application maps ExpressLRS channels to vJoy axes:
 | "vJoy driver not enabled" | Install vJoy driver and enable device #1 in "Configure vJoy" |
 | "vJoy Device 1 is already owned" | Close other applications using vJoy device #1 |
 | "Waiting for joystick data..." | Ensure the TX module is connected to WiFi; for Crossfire, wait for the `VELOCIDRONE` beacon or pass `--tx <module-ip>` |
+| Switches (CH9-CH16) do nothing in the sim | The vJoy device needs buttons: set **8 buttons** in *Configure vJoy* (the log says how many it has). The module must send 16 channels: set Channels to 16 |
+| Rate stays at ~90 Hz / Rate and Channels are greyed out | That's a Crossfire module: it always sends 16 channels at about 90 Hz, whatever is asked |
+| ELRS rate or channel count doesn't change | ELRS takes them from 3.4.0 on; older firmware streams its own fixed values |
 | No joystick input in simulator | Verify vJoy device is enabled and simulator recognizes "vJoy Device" |
 | **Streaming, but the vJoy device never moves** (joy.cpl stays centred) | The log line `vJoy driver X, DLL Y` shows a mismatch: `vJoyInterface.dll` must match the installed driver (e.g. driver 2.2.2 with a 2.1.9 DLL acquires the device but never moves it). The app uses vJoy's own `x64\vJoyInterface.dll` when it finds it — reinstall vJoy if it's missing |
 | Crossfire not detected | Confirm the module is on the same network (ping its IP); check the [firmware versions](#-crossfire-firmware-compatibility-important) below. Try `--tx <ip>` to activate directly |
@@ -289,8 +340,12 @@ netsh advfirewall firewall add rule name="ELRS WiFi Joystick" dir=in action=allo
 - **Discovery**: module broadcasts a beacon on UDP 11000 — `ELRS` (ExpressLRS) or
   `VELOCIDRONE` (TBS Crossfire/Tracer). The app detects it and activates the module.
 - **Activation**: HTTP `POST http://<module-ip>/udpcontrol` with form body
-  `action=joystick_begin&interval=10000&channels=8`. The module replies `ok` and begins
+  `action=joystick_begin&interval=4000&channels=16` (the request: see
+  [Rate & channels](#-rate--channels)). The module replies `ok` and begins
   streaming. (Activation POSTs are throttled to once per 5 s per module.)
+- **Restart** (ELRS only, to apply a new request): `action=joystick_end`, then the
+  `joystick_begin` above - past the throttle, which it then restarts. POSTs to one module go
+  out one after the other, off the receive thread.
 - **Transport**: UDP packets on port 11000
 - **Packet Format**:
   - Byte 0: Frame type (1 = channels)
@@ -305,13 +360,13 @@ netsh advfirewall firewall add rule name="ELRS WiFi Joystick" dir=in action=allo
   (mid-stream, the last good values are held for the ~11 ms gap). Values slightly above 32767
   *without* the placeholder are legitimate stick overshoot past a wide endpoint and are
   clamped to full deflection.
-- **Update Rate**: ~90-100 Hz typical
+- **Update Rate**: what is asked for with ELRS (250 Hz by default, 10-1000 Hz); about 90 Hz with Crossfire
 - **Single-source lock**: the app binds to the first module that streams real channel data
   and ignores any other source until the bound one is silent for 3 s, so two radios on the
   same network can't interfere.
 
 ### Performance Characteristics
-- **Latency**: < 10ms from TX to vJoy
+- **Latency**: < 10ms from TX to vJoy (a new frame every 4 ms at the default 250 Hz)
 - **CPU Usage**: Minimal (< 1% on modern systems)
 - **Memory**: ~10MB runtime memory usage
 - **Network**: ~1KB/s bandwidth usage
@@ -319,7 +374,8 @@ netsh advfirewall firewall add rule name="ELRS WiFi Joystick" dir=in action=allo
 ### vJoy Integration
 - **Library**: vJoyInterfaceWrap.dll for Windows virtual joystick creation; the native
   vJoyInterface.dll is loaded from the vJoy install so it matches the driver (2.1.9 - 2.2.x)
-- **Axes**: Supports up to 8 axes per vJoy device
+- **Axes**: 8 axes per vJoy device (`SetAxis`), **buttons** 1-8 from CH9-CH16 (`SetBtn`) - the
+  same calls on vJoy 2.1.9 and 2.2.x; only what changed is written
 - **Processing**: Direct pass-through of values for minimal latency
 - **Filtering**: No smoothing or filtering applied (raw input for precise control)
 

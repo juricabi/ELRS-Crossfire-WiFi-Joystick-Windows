@@ -17,7 +17,11 @@ public class EngineLifecycleTests
             Port = port,
             SkipVJoyForTest = true,
             OutputOverride = ch => { lock (applied) applied.Add((int[])ch.Clone()); },
-            ActivateOverride = ip => { lock (activated) activated.Add(ip); return true; },
+            ActivateOverride = p =>
+            {
+                if (p.Action == JoystickEngine.ActionBegin && !p.Restart) lock (activated) activated.Add(p.Ip);
+                return true;
+            },
         };
         e.StateChanged += (s, d) =>
         {
@@ -125,6 +129,37 @@ public class EngineLifecycleTests
         try
         {
             Assert.True(error.Wait(3000), "binding an occupied port must surface an Error state");
+        }
+        finally
+        {
+            e.StopAndWait(2000);
+        }
+    }
+
+    [Fact]
+    public void AfterAnErrorExit_NothingIsPosted_UntilTheNextStart()
+    {
+        const int port = 27407;
+        var activated = new List<string>();
+        using var error = new ManualResetEventSlim();
+        var e = NewEngine(port, new List<int[]>(), activated, error: error);
+        var log = new List<string>();
+        e.Log += m => { lock (log) log.Add(m); };
+        using (var blocker = new UdpClient(port))
+        {
+            e.Start();
+            Assert.True(error.Wait(3000));
+            Assert.True(WaitFor(() => !e.IsRunning, 3000));
+            e.SetTarget("10.0.0.1");
+            Assert.False(e.RestartStream());
+            lock (log) Assert.Contains("Not running - nothing to restart", log);
+        }
+        lock (activated) Assert.Empty(activated);
+        // the port is free again: the next start works and activates the target
+        e.Start();
+        try
+        {
+            Assert.True(WaitFor(() => { lock (activated) return activated.Contains("10.0.0.1"); }, 3000));
         }
         finally
         {

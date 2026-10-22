@@ -4,7 +4,7 @@
         xmlns:tb="http://www.hardcodet.net/taskbar"
         xmlns:local="clr-namespace:ELRSWifiJoystick"
         Title="ELRS / TBS Crossfire WiFi Joystick"
-        Width="740" Height="820" MinWidth="660" MinHeight="640"
+        Width="740" Height="860" MinWidth="660" MinHeight="680"
         WindowStartupLocation="CenterScreen"
         Background="{StaticResource BgBrush}"
         Icon="/icons/app.ico"
@@ -14,9 +14,11 @@
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto" />   <!-- banner -->
             <RowDefinition Height="Auto" />   <!-- axes -->
+            <RowDefinition Height="Auto" />   <!-- buttons -->
             <RowDefinition Height="Auto" />   <!-- stats -->
             <RowDefinition Height="Auto" />   <!-- firewall -->
             <RowDefinition Height="Auto" />   <!-- settings -->
+            <RowDefinition Height="Auto" />   <!-- request (rate, channels) -->
             <RowDefinition Height="*" />      <!-- log -->
         </Grid.RowDefinitions>
 
@@ -82,16 +84,24 @@
             </ItemsControl.ItemTemplate>
         </ItemsControl>
 
+        <!-- ===== buttons: CH9-CH16 = joystick buttons 1-8 ===== -->
+        <TextBlock Grid.Row="2" Margin="16,2,16,0" Text="{Binding ButtonsText}"
+                   Foreground="{StaticResource MutedBrush}" FontSize="13" />
+
         <!-- ===== stats row ===== -->
-        <Grid Grid.Row="2" Margin="16,4,16,0">
-            <TextBlock Text="{Binding StatsText}" Foreground="{StaticResource FgBrush}"
+        <Grid Grid.Row="3" Margin="16,6,16,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <TextBlock Text="{Binding StatsText}" Foreground="{StaticResource FgBrush}" TextTrimming="CharacterEllipsis"
                        FontSize="13" HorizontalAlignment="Left" VerticalAlignment="Center" />
-            <TextBlock Text="{Binding VJoyText}" Foreground="{StaticResource MutedBrush}"
-                       FontSize="13" HorizontalAlignment="Right" VerticalAlignment="Center" />
+            <TextBlock Grid.Column="1" Text="{Binding VJoyText}" Foreground="{StaticResource MutedBrush}"
+                       FontSize="13" Margin="12,0,0,0" VerticalAlignment="Center" />
         </Grid>
 
         <!-- ===== firewall row ===== -->
-        <Grid Grid.Row="3" Margin="16,8,16,0" MinHeight="32">
+        <Grid Grid.Row="4" Margin="16,8,16,0" MinHeight="32">
             <TextBlock VerticalAlignment="Center" FontSize="13" HorizontalAlignment="Left">
                 <TextBlock.Style>
                     <Style TargetType="TextBlock">
@@ -124,7 +134,7 @@
         </Grid>
 
         <!-- ===== settings row ===== -->
-        <StackPanel Grid.Row="4" Orientation="Horizontal" Margin="16,10,16,0">
+        <StackPanel Grid.Row="5" Orientation="Horizontal" Margin="16,10,16,0">
             <TextBlock Text="Port:" Foreground="{StaticResource MutedBrush}"
                        VerticalAlignment="Center" FontSize="13" Margin="0,0,6,0" />
             <TextBox Width="64" Style="{StaticResource DarkTextBox}"
@@ -165,8 +175,35 @@
                     Style="{StaticResource DarkButton}" Margin="8,0,0,0" MinWidth="68" />
         </StackPanel>
 
+        <!-- ===== request row: what the module is asked for, applied live ===== -->
+        <Grid Grid.Row="6" Margin="16,8,16,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+            <TextBlock Text="Rate:" Foreground="{StaticResource MutedBrush}"
+                       VerticalAlignment="Center" FontSize="13" Margin="0,0,6,0" />
+            <ComboBox Grid.Column="1" Width="160" Style="{StaticResource DarkComboBox}"
+                      ItemsSource="{Binding RateOptions}" DisplayMemberPath="Label" SelectedValuePath="Value"
+                      SelectedValue="{Binding SelectedIntervalUs, Mode=TwoWay}"
+                      IsEnabled="{Binding IsRequestEditable}"
+                      ToolTip="{Binding RequestToolTip}" ToolTipService.ShowOnDisabled="True" />
+            <TextBlock Grid.Column="2" Text="Channels:" Foreground="{StaticResource MutedBrush}"
+                       VerticalAlignment="Center" FontSize="13" Margin="14,0,6,0" />
+            <ComboBox Grid.Column="3" Width="120" Style="{StaticResource DarkComboBox}"
+                      ItemsSource="{Binding ChannelOptions}" DisplayMemberPath="Label" SelectedValuePath="Value"
+                      SelectedValue="{Binding SelectedChannels, Mode=TwoWay}"
+                      IsEnabled="{Binding IsRequestEditable}"
+                      ToolTip="{Binding RequestToolTip}" ToolTipService.ShowOnDisabled="True" />
+            <TextBlock Grid.Column="4" Text="{Binding RequestNote}" Foreground="{StaticResource FwWarnBrush}"
+                       FontSize="12.5" VerticalAlignment="Center" Margin="14,0,0,0" TextWrapping="Wrap" />
+        </Grid>
+
         <!-- ===== log ===== -->
-        <TextBox x:Name="LogBox" Grid.Row="5" Margin="16,12,16,14"
+        <TextBox x:Name="LogBox" Grid.Row="7" Margin="16,12,16,14"
                  Text="{Binding LogText, Mode=OneWay}" IsReadOnly="True"
                  Background="{StaticResource LogBgBrush}" Foreground="{StaticResource LogFgBrush}"
                  BorderBrush="{StaticResource BorderBrush2}" BorderThickness="1"

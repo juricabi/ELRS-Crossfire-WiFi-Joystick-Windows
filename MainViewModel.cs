@@ -2,6 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
+using System.Globalization;
+using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Threading.Tasks;
@@ -34,6 +36,20 @@ namespace ELRSWifiJoystick
             => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
     }
 
+    // One entry of the Rate / Channels drop-downs: the value, and its text ("250 Hz (default)").
+    sealed class RequestOption
+    {
+        public RequestOption(int value, string label)
+        {
+            Value = value;
+            Label = label;
+        }
+
+        public int Value { get; }
+        public string Label { get; }
+        public override string ToString() => Label;
+    }
+
     // The main view model. Deliberately free of WPF types (except ICommand via
     // RelayCommand) so it is fully unit-testable: the view supplies a UI-thread
     // marshaller and subscribes to plain INotifyPropertyChanged.
@@ -50,8 +66,14 @@ namespace ELRSWifiJoystick
 
         private volatile int[]? latestChannels;
         private bool axesActive;
+        private double lastHz, lastJitter;  // the last stats tick, shown again when the request changes
+        private int lastCount;
 
         public ObservableCollection<AxisItem> Axes { get; } = new();
+
+        // The request drop-downs: supported values only, the default marked.
+        public IReadOnlyList<RequestOption> RateOptions { get; }
+        public IReadOnlyList<RequestOption> ChannelOptions { get; } = BuildChannelOptions();
 
         public RelayCommand StartStopCommand { get; }
         public RelayCommand ConnectCommand { get; }
@@ -62,7 +84,8 @@ namespace ELRSWifiJoystick
         // Raised when the user asks for help; the view opens the Help window.
         public event Action? HelpRequested;
 
-        public MainViewModel(int port, string? txIp, Action<Action> uiInvoke)
+        public MainViewModel(int port, string? txIp, Action<Action> uiInvoke,
+                             int intervalUs = StreamRequest.IntervalDefault, int channels = StreamRequest.ChannelsDefault)
         {
             ui = uiInvoke;
             PortText = port.ToString();
@@ -72,11 +95,16 @@ namespace ELRSWifiJoystick
                 Axes.Add(new AxisItem(n));
 
             Engine = new JoystickEngine { Port = port, ActivationIP = txIp };
+            Engine.SetRequest(intervalUs, channels);           // not running yet: nothing is sent
+            _selectedIntervalUs = Engine.IntervalUs;
+            _selectedChannels = Engine.Channels;
+            RateOptions = BuildRateOptions(_selectedIntervalUs);
+            _statsText = FormatStats(0, 0, 0, Engine.IntervalUs, 0, Engine.Channels, false);
+
             Engine.Log += msg => ui(() => AppendLog(msg));
             Engine.StateChanged += (s, d) => ui(() => OnEngineState(s, d));
             Engine.ChannelsUpdated += ch => latestChannels = ch;   // no marshalling; timer samples it
-            Engine.StatsUpdated += (hz, jit, cnt) => ui(() =>
-                StatsText = cnt > 0 ? $"Rate: {hz:0} Hz     Jitter: {jit:0.0} ms     {cnt} pkt/s" : "Rate: --     Jitter: --");
+            Engine.StatsUpdated += (hz, jit, cnt) => ui(() => OnStats(hz, jit, cnt));
 
             StartStopCommand = new RelayCommand(ToggleEngine);
             ConnectCommand = new RelayCommand(Connect);
@@ -100,8 +128,52 @@ namespace ELRSWifiJoystick
         private string _bannerDetail = "";
         public string BannerDetail { get => _bannerDetail; private set => SetField(ref _bannerDetail, value); }
 
-        private string _statsText = "Rate: --     Jitter: --";
+        private string _statsText;
         public string StatsText { get => _statsText; private set => SetField(ref _statsText, value); }
+
+        private string _buttonsText = ButtonsIdleText;
+        public string ButtonsText { get => _buttonsText; private set => SetField(ref _buttonsText, value); }
+
+        // The request, applied live through the engine (which restarts a streaming ELRS module).
+        private int _selectedIntervalUs;
+        public int SelectedIntervalUs
+        {
+            get => _selectedIntervalUs;
+            set { if (SetField(ref _selectedIntervalUs, value)) ApplyRequest(); }
+        }
+
+        private int _selectedChannels;
+        public int SelectedChannels
+        {
+            get => _selectedChannels;
+            set { if (SetField(ref _selectedChannels, value)) ApplyRequest(); }
+        }
+
+        // Locked to a Crossfire module: it ignores the request, so the drop-downs are disabled.
+        private bool _isCrossfire;
+        public bool IsCrossfire
+        {
+            get => _isCrossfire;
+            private set
+            {
+                if (!SetField(ref _isCrossfire, value)) return;
+                OnChanged(nameof(IsRequestEditable));
+                OnChanged(nameof(RequestNote));
+                OnChanged(nameof(RequestToolTip));
+            }
+        }
+
+        public bool IsRequestEditable => !IsCrossfire;
+
+        public string RequestNote => IsCrossfire ? CrossfireNote : "";
+
+        public string RequestToolTip => IsCrossfire
+            ? CrossfireNote
+            : "What the app asks the module for. ELRS (3.4.0 and later) switches at once: its stream restarts. " +
+              "Crossfire ignores it (16 channels, about 90 Hz).";
+
+        internal const string CrossfireNote = "Crossfire ignores these: always 16 channels at about 90 Hz";
+        internal const string ButtonsIdleText = "Buttons (CH9-CH16): --";
 
         private string _vjoyText = "vJoy: --";
         public string VJoyText { get => _vjoyText; private set => SetField(ref _vjoyText, value); }
@@ -219,6 +291,79 @@ namespace ELRSWifiJoystick
             });
         }
 
+        // ---- the request -----------------------------------------------------------------
+
+        private void ApplyRequest()
+        {
+            int iv = SelectedIntervalUs, ch = SelectedChannels;
+            if (iv == Engine.IntervalUs && ch == Engine.Channels) return;
+            AppendLog($"Asking for {StreamRequest.Describe(iv)}, {ch} channels.");
+            Engine.SetRequest(iv, ch);
+            RenderStats();
+        }
+
+        // Presets, highest rate first, plus the current interval when it is not one (--interval 3500).
+        internal static IReadOnlyList<RequestOption> BuildRateOptions(int currentUs)
+        {
+            var list = StreamRequest.IntervalPresets.ToList();
+            if (!list.Contains(currentUs)) list.Add(currentUs);
+            list.Sort();
+            return list.Select(us => new RequestOption(us,
+                StreamRequest.Describe(us) + (us == StreamRequest.IntervalDefault ? " (default)" : ""))).ToList();
+        }
+
+        internal static IReadOnlyList<RequestOption> BuildChannelOptions()
+        {
+            var list = new List<RequestOption>();
+            for (int n = StreamRequest.ChannelsMin; n <= StreamRequest.ChannelsMax; n++)
+                list.Add(new RequestOption(n, n == StreamRequest.ChannelsDefault ? $"{n} (default)" : $"{n}"));
+            return list;
+        }
+
+        // "Rate: 249 Hz (asked 250)     Jitter: 0.4 ms     249 pkt/s     16 ch". Crossfire streams at its
+        // own rate, so nothing was "asked" there. The channel count shows what was asked when it differs.
+        internal static string FormatStats(double hz, double jitterMs, int count, int askedIntervalUs,
+                                           int channels, int askedChannels, bool crossfire)
+        {
+            string asked = crossfire ? "Crossfire: its own rate" : $"asked {StreamRequest.IntervalHz(askedIntervalUs)}";
+            if (count <= 0) return $"Rate: -- ({asked})     Jitter: --";
+            string ch = channels <= 0 ? "" :
+                $"     {channels} ch" + (!crossfire && channels != askedChannels ? $" (asked {askedChannels})" : "");
+            return string.Format(CultureInfo.CurrentCulture, "Rate: {0:0} Hz ({1})     Jitter: {2:0.0} ms     {3} pkt/s{4}",
+                                 hz, asked, jitterMs, count, ch);
+        }
+
+        // "Buttons (CH9-CH16):  1 ●  2 ○ ..." from the engine's button state (the frame's channels only).
+        internal static string FormatButtons(int channels, int mask)
+        {
+            int n = Math.Min(JoystickMap.ButtonCount, channels - JoystickMap.FirstButtonChannel);
+            if (n <= 0)
+                return channels > 0 ? $"Buttons (CH9-CH16): none - the module sends {channels} channels" : ButtonsIdleText;
+            var sb = new StringBuilder("Buttons (CH9-CH16):");
+            for (int i = 0; i < n; i++)
+                sb.Append($"   {i + 1} {((mask >> i & 1) != 0 ? '\u25CF' : '\u25CB')}");
+            return sb.ToString();
+        }
+
+        private void OnStats(double hz, double jit, int cnt)
+        {
+            lastHz = hz;
+            lastJitter = jit;
+            lastCount = cnt;
+            UpdateCrossfire();
+            RenderStats();
+        }
+
+        private void RenderStats()
+        {
+            int nch = latestChannels?.Length ?? 0;
+            StatsText = FormatStats(lastHz, lastJitter, lastCount, Engine.IntervalUs, nch, Engine.Channels, IsCrossfire);
+        }
+
+        // Crossfire is known from its beacon, which may come after the lock (every ~8 s): checked on every
+        // state change and every stats tick (1 s).
+        private void UpdateCrossfire() => IsCrossfire = IsStreaming && Engine.SourceKind == ModuleKind.Crossfire;
+
         // ---- engine events ---------------------------------------------------------------
 
         private void OnEngineState(EngineState state, string detail)
@@ -242,12 +387,16 @@ namespace ELRSWifiJoystick
             {
                 latestChannels = null;
                 axesActive = false;
+                lastCount = 0;
                 foreach (var a in Axes) { a.Value = 0; a.PercentText = "--"; }
+                ButtonsText = ButtonsIdleText;
             }
             else
             {
                 axesActive = true;
             }
+            UpdateCrossfire();
+            RenderStats();
         }
 
         // Called by the view's render timer (~60 fps, only while streaming and visible).
@@ -262,6 +411,13 @@ namespace ELRSWifiJoystick
                 Axes[i].Value = v;
                 Axes[i].PercentText = $"{v * 100 / 32767}%";
             }
+            // A channel the frame doesn't carry is centered on the joystick: show that, not a stale bar.
+            for (int i = n; i < Axes.Count; i++)
+            {
+                Axes[i].Value = JoystickMap.Center;
+                Axes[i].PercentText = "--";
+            }
+            ButtonsText = FormatButtons(ch.Length, Engine.ButtonMask);
         }
 
         // ---- log -------------------------------------------------------------------------
