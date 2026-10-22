@@ -15,7 +15,7 @@ namespace ELRSWifiJoystick
 {
     enum EngineState { Stopped, Searching, Streaming, Error }
 
-    // What a module is, from its discovery beacon this session ("ELRS" or "VELOCIDRONE").
+    // What a module is, from its discovery beacon ("ELRS" or "VELOCIDRONE"); kept across sessions (R9).
     enum ModuleKind { Unknown, Elrs, Crossfire }
 
     // One activation POST to a module's /udpcontrol, as the test seam sees it. Action is joystick_begin
@@ -25,7 +25,51 @@ namespace ELRSWifiJoystick
 
     // Core WiFi-joystick engine: receives the ELRS/Crossfire UDP stream, feeds vJoy, and
     // raises events for a UI. Runs its own background thread; events fire on that thread (and on the
-    // caller's for SetTarget, SetRequest and RestartStream), so subscribers must marshal to their UI thread.
+    // caller's for SetTarget, SetRequest and RestartStream, and on a POST's for its result), so subscribers
+    // must marshal to their UI thread.
+    //
+    // The rules of the request (the same in the Linux core, core/wifi_proto.h, and in every doc of the apps):
+    // R1  Defaults 4000 us (250 Hz) and 16 channels. Supported: interval 1000..100000 us (presets
+    //     1000/500/333/250/200/150/100/50 Hz), channels 4..16 (StreamRequest).
+    // R2  A change while locked: Crossfire (by its beacon) -> logged once per session, nothing sent. Surely no
+    //     Crossfire (its ELRS beacon seen, or frames of a count other than 16) -> restarted now (joystick_end,
+    //     then joystick_begin with the request). Unknown kind with 16 channels -> held until XF_BEACON_SEC of the
+    //     lock passed without a Crossfire beacon, then restarted; dropped on a Crossfire beacon. A held restart
+    //     survives a lock loss of its module and goes out when that module locks again (after its window);
+    //     dropped when that module's ELRS beacon gets it a joystick_begin carrying the request, or when another
+    //     module takes the lock.
+    // R3  Not locked: the next joystick_begin carries the request. What each module was last asked is kept per
+    //     module (requestOf, TableSize); a module that locks with another asked request than the request is
+    //     restarted under R2's kind rules. A restart that did not take (R6, or cut short by Stop) leaves it
+    //     unknown (RequestUnknown): restarted at its next lock unless its ELRS beacon gets it a joystick_begin
+    //     carrying the request first.
+    // R4  Explicit restart (RestartStream): locked -> as R2 (Crossfire: logged, nothing sent). Not locked, the
+    //     module IP set: known as ELRS -> restarted; unknown or Crossfire -> a plain joystick_begin past the
+    //     throttle, never joystick_end. Neither -> logged, nothing sent.
+    // R5  A module surely no Crossfire streaming a channel count other than the request -> restarted once per
+    //     module and session. Unknown kind streaming 16 while fewer are asked -> once R2's window passed without
+    //     a Crossfire beacon, restarted once.
+    // R6  A restart is done only when both POSTs got a 2xx. A failed one is sent again THROTTLE_SEC after the
+    //     last send while that module stays locked and is not known as Crossfire, RestartTries sends per
+    //     restart (request change) in all; giving up is logged. Once it is not sent again (given up, or the
+    //     module no longer locked) the module is restarted at its next lock (R3). A failed plain
+    //     joystick_begin is never retried as a restart.
+    // R7  The module IP set to the locked module: the lock stays, nothing sent, logged. Another one: unlocked,
+    //     state "connecting to <ip>", joystick_begin at once; a restart to send again or held for the module
+    //     being left is dropped.
+    // R8  The module IP and the request together (SetTarget(text, intervalUs, channels), one step): the new
+    //     module's joystick_begin carries the request, the module being left gets nothing. An engine API: the
+    //     GUI and the CLI change the request (at once) and the module IP (Connect) one at a time.
+    // R9  A stop/start or a port change (ResetSessionState) starts a new session: lock, throttles and restart
+    //     state cleared; the kinds from beacons and the asked requests kept. (The GUI and the CLI also clear the
+    //     module IP on Stop - documented; the engine keeps ActivationIP.)
+    // R10 Tables are bounded (TableSize); the locked module's kind is never evicted.
+    // R11 Lock loss, stop, exit and a switch to another module IP center the 8 axes and release the buttons;
+    //     channels a frame does not carry are neutral; short gaps hold the last values (JoystickMap).
+    // R12 Tick (lock release, retries, held restarts, target re-POST) runs at least every 100 ms whatever
+    //     traffic arrives.
+    // R13 One automatic plain activation POST (a beacon, the module IP's tries) per module per THROTTLE_SEC;
+    //     SetTarget, RestartStream and restarts go past it, and a restart restarts it.
     class JoystickEngine
     {
         public int Port = 11000;
@@ -46,8 +90,14 @@ namespace ELRSWifiJoystick
         // Crossfire beacons about every 8 s, also while it streams (ELRS never while it streams): a
         // module locked this long without one (two lost) is no Crossfire.
         internal const double XF_BEACON_SEC = 20.0;
+        // One plain activation POST per module per this (R13); a failed restart is sent again this long after
+        // its last send (R6).
+        internal const double THROTTLE_SEC = 5.0;
+        // Sends of a restart that fails (R6), per restart (a request change, an explicit one, a mismatch).
+        internal const int RestartTries = 3;
         // What a Crossfire module puts in a channel it has no data for (62058).
         internal const int XF_PLACEHOLDER = 0xF26A;
+        internal const string NoStickState = "module found, but it is sending no stick data";
         // Per-module tables, and modules with a POST waiting for its answer (the Linux core's WIFI_TABLE): a
         // host sending beacons from many addresses can't grow memory or tie up a thread per address.
         internal const int TableSize = 8;
@@ -101,8 +151,13 @@ namespace ELRSWifiJoystick
         private volatile string? boundSource;   // also cleared by the UI thread via SetTarget
         private DateTime boundSourceLastData;
         private readonly HashSet<string> noStickData = new();
+        private DateTime noStickLast;                   // the last placeholder frame while not locked (engine thread)
+        private volatile EngineState state = EngineState.Stopped;     // the last one said (SetState)
+        private volatile bool noStickShown;             // ... and it is Searching NoStickState
         private readonly HashSet<string> warned = new();
-        private readonly IpTable<DateTime> lastActivation = new();
+        // The last activation POST per module (the throttle, R13) and the request it carried (R3).
+        private readonly IpTable<Activation> lastActivation = new();
+        private readonly record struct Activation(DateTime At, int IntervalUs, int Channels);
         // Set from an activation task thread, read/cleared on the engine thread. The lock is taken (and said)
         // under it too, so an answer racing the first frame can't arm the "no data" hint after the lock, and
         // SetTarget drops a lock under it.
@@ -111,21 +166,37 @@ namespace ELRSWifiJoystick
         private bool firewallHintShown;
 
         // The request (kept across sessions; written by UI threads, read by the engine and POST threads)
-        // and what this session learnt about modules. All under requestGate.
+        // and what the app learnt about modules. All under requestGate.
         private readonly object requestGate = new();
         private volatile int intervalUs = StreamRequest.IntervalDefault;
         private volatile int channels = StreamRequest.ChannelsDefault;
+        // The kind of each module from its beacons. Kept across sessions (R9): a module keeps its kind while it
+        // keeps its IP, and an ELRS module streams on after Stop and never beacons while it streams. The kind
+        // decides whether a joystick_end may be sent, so the locked module's is never evicted (R10).
         private readonly IpTable<ModuleKind> kinds = new();
-        private readonly HashSet<string> restarted = new();     // restarted for a channel mismatch, or explicitly
-        // The request a module streams as far as this app knows: what a joystick_begin carried when the module
-        // was not streaming (a restart, or an activation after its ELRS beacon). Kept across sessions - a module
-        // keeps streaming after Stop - so a change made while it was not locked (WiFi dropout, Stop) reaches it
-        // as a restart when it locks again. What a module the app found streaming streams is not known.
-        // RequestUnknown: a restart of it was cut short by Stop - it may stream anything but the request.
+        private readonly HashSet<string> restarted = new();     // restarted this session: a mismatch restarts once
+        // What each module was last asked for (R3), as far as this app knows: the request of a restart sent to it
+        // or of an activation after its ELRS beacon (it was not streaming then), else, from its lock on, that of
+        // the last activation sent to it this session, or the request when it locked (found streaming). Kept
+        // across sessions - a module keeps streaming after Stop - so a change made while it was not locked
+        // (WiFi dropout, Stop, its activation in flight) reaches it as a restart when it locks again.
+        // RequestUnknown: a restart of it did not take (it failed, R6, or Stop cut it short) - it may still stream
+        // its old request, so its next lock restarts it (CheckRequest).
         private readonly IpTable<(int IntervalUs, int Channels)> requestOf = new();
         private static readonly (int IntervalUs, int Channels) RequestUnknown = (0, 0);
         private bool xfNoted;                                    // "Crossfire ignores the request" logged
         private volatile bool restartWait;                       // a request restart waiting to know it is no Crossfire
+        private string? restartWaitIp;                           // ... of this module (held through its lock loss)
+        // A restart that failed (R6): sent again to retryIp from retryAt while that module stays locked.
+        private string? retryIp;
+        private DateTime retryAt;
+        // The locked module whose restart failed RestartTries times: not restarted again for its old request
+        // while this lock lasts (its next lock restarts it, R3).
+        private string? gaveUpIp;
+        private int restartTries;                                // sends of the current restart
+        private long restartSeq;                                 // the last restart sent: only its result counts
+        private string? restartSentIp;                           // ... to this module
+        private DateTime restartSentAt;                          // ... and when it went out
         private DateTime boundSince;                             // when the lock was taken
         private volatile int boundChannels;                      // channel count of the last applied frame
         private int restartCount;
@@ -150,8 +221,8 @@ namespace ELRSWifiJoystick
         public int ButtonMask => map.ButtonMask;        // bit i = joystick button i+1 (CH9+i) pressed
         public int RestartCount => Volatile.Read(ref restartCount);   // restarts sent (lifetime)
 
-        // From the beacons seen this session (Unknown until one arrives: Crossfire beacons ~every 8 s,
-        // ELRS only while it is not streaming).
+        // From the beacons seen (Unknown until one arrives: Crossfire beacons ~every 8 s, ELRS only while it is
+        // not streaming). Kept across sessions (R9).
         public ModuleKind KindOf(string ip)
         {
             lock (requestGate) return KindLocked(ip);
@@ -229,10 +300,24 @@ namespace ELRSWifiJoystick
         }
 
         // Set/replace the module IP to activate, live (Connect). Blank: discovery by beacon. Not an IPv4
-        // address (a.b.c.d): logged, the target kept, false. Else the lock goes - the engine thread centers
-        // the joystick on its next tick - the state says Searching "connecting to <ip>", and the activation
-        // POST goes out at once (off this thread), past the throttle (wifi_proto_set_target).
-        public bool SetTarget(string? text)
+        // address (a.b.c.d): logged, the target kept, false. The module streaming to us now (locked, data within
+        // SOURCE_TIMEOUT_SEC): the lock stays - unlocking it would center the joystick for a moment for nothing,
+        // and a joystick_begin would not change its stream - nothing is sent, logged (R7). Else the lock goes -
+        // the engine thread centers the joystick on its next tick - the state says Searching "connecting to
+        // <ip>", and the activation POST goes out at once (off this thread), past the throttle. A restart to send
+        // again or held for another module is dropped: that module is being left (wifi_proto_set_target).
+        public bool SetTarget(string? text) => SetTarget(text, null);
+
+        // The module IP and the request changed together, in one step (R8; the Linux app's settings change):
+        // the request (clamped) is stored, and the module IP set as SetTarget does. Another module than the one
+        // streaming now: that one is being left and gets nothing - no restart, also not from a frame of it
+        // handled at the same moment - and the new one's joystick_begin carries the request. The module
+        // streaming now kept, or none locked, or a blank module IP: the change works as SetRequest (R2/R3).
+        // An invalid module IP changes nothing (false). Any thread.
+        public bool SetTarget(string? text, int intervalUs, int channels) =>
+            SetTarget(text, (StreamRequest.ClampInterval(intervalUs), StreamRequest.ClampChannels(channels)));
+
+        private bool SetTarget(string? text, (int IntervalUs, int Channels)? request)
         {
             if (!TryParseModuleIp(text, out string? ip))
             {
@@ -242,22 +327,60 @@ namespace ELRSWifiJoystick
             if (ip == null)
             {
                 ActivationIP = null;
+                if (request is { } r0) SetRequest(r0.IntervalUs, r0.Channels);    // no module is being left
                 return true;
             }
             bool live = !stopRequested;
             lock (lastActivation) lastActivation.Remove(ip);        // allow immediate (re)activation
+            bool streaming;
+            RestartPlan? plan = null;
             // Under the gate a lock is taken and said under: a lock of the module being left that is being taken
             // right now says Streaming before this says Searching (or sees the new module IP and is not taken),
             // and a frame of the new module locks after it.
             lock (activationGate)
             {
-                if (live) SetState(EngineState.Searching, $"connecting to {ip}");
+                streaming = live && boundSource == ip &&
+                            (Clock() - boundSourceLastData).TotalSeconds <= SOURCE_TIMEOUT_SEC;
+                if (live && !streaming) SetState(EngineState.Searching, $"connecting to {ip}");
                 ActivationIP = ip;
-                boundSource = null;                                 // let the new target take over
+                // The request and the lock drop in one step under requestGate: a frame of the module being left
+                // (past the module IP check already) is checked (CheckRequest) either before both - the old
+                // request - or after both, unlocked: never restarted for the new request.
+                lock (requestGate)
+                {
+                    if (retryIp != ip) retryIp = null;
+                    if (restartWaitIp != ip) restartWait = false;
+                    if (request is { } r && (r.IntervalUs != intervalUs || r.Channels != channels))
+                    {
+                        intervalUs = r.IntervalUs;
+                        channels = r.Channels;
+                        if (streaming) plan = PlanChangeLocked(ip);     // the module kept: like SetRequest
+                    }
+                    if (!streaming) boundSource = null;             // let the new target take over
+                }
+            }
+            if (plan is RestartPlan p) Carry(p, ip, null);
+            if (streaming)
+            {
+                Log?.Invoke($"Target module set to {ip} - streaming from it already");
+                return true;
             }
             Log?.Invoke($"Target module set to {ip} - connecting...");
             if (live) EnsureStreaming(ip);
             return true;
+        }
+
+        // Only store the request (clamped), restarting nothing (wifi_proto_store_request). A host that changes the
+        // module IP and the request together uses SetTarget(text, intervalUs, channels), which does both in one
+        // step: between this and a SetTarget, a frame of the module streaming now finds the new request and
+        // restarts it (CheckRequest). Any thread.
+        public void StoreRequest(int intervalUs, int channels)
+        {
+            lock (requestGate)
+            {
+                this.intervalUs = StreamRequest.ClampInterval(intervalUs);
+                this.channels = StreamRequest.ClampChannels(channels);
+            }
         }
 
         // Set what joystick_begin asks for; values are clamped to the supported range. The Linux core's
@@ -280,29 +403,36 @@ namespace ELRSWifiJoystick
                 this.channels = channels;
                 src = stopRequested ? null : boundSource;
                 if (src == null) return true;
-                if (KindLocked(src) == ModuleKind.Crossfire)
-                {
-                    if (xfNoted) return true;
-                    xfNoted = true;
-                    plan = new RestartPlan(Plan.NoteCrossfire, intervalUs, channels, 0);
-                }
                 // decided with the change, so a frame's mismatch check can't restart it a second time
-                else plan = PlanRestartLocked(src, src);
+                if (PlanChangeLocked(src) is not RestartPlan p) return true;
+                plan = p;
             }
             Carry(plan, src, null);
             return true;
         }
 
+        // Under requestGate, the request just changed while src is locked (R2): Crossfire -> noted once per
+        // session (null once noted); else restarted, or held to know it is no Crossfire (PlanRestartLocked).
+        private RestartPlan? PlanChangeLocked(string src)
+        {
+            if (KindLocked(src) != ModuleKind.Crossfire) return PlanRestartLocked(src, src);
+            if (xfNoted) return null;
+            xfNoted = true;
+            return new RestartPlan(Plan.NoteCrossfire, intervalUs, channels, 0);
+        }
+
         // Restart the stream of the locked module, else of the module IP, so it uses the request now:
         // POST joystick_end, then joystick_begin (off the receive thread, past the 5 s activation
-        // throttle, which it then restarts). Crossfire: logged, nothing sent - it ignores the request and
-        // what joystick_end does to it is unknown. Returns false when there is no module or it is
-        // Crossfire. Any thread. (wifi_proto_restart)
+        // throttle, which it then restarts). Locked to Crossfire: logged, nothing sent - it ignores the request
+        // and what joystick_end does to it is unknown. Returns false when there is no module or it is the
+        // locked Crossfire. Any thread. (wifi_proto_restart, R4)
         //
-        // A locked module that may be Crossfire - 16 channels and no beacon from it yet this session - is
-        // restarted only once XF_BEACON_SEC of lock passed without a Crossfire beacon (true is returned at
-        // once: the restart is accepted, and held). Its beacon -> only noted; the lock lost -> dropped
-        // (see ResolveRestartWait). The module IP, not locked and of unknown kind, is only activated.
+        // A locked module that may be Crossfire - 16 channels and no beacon from it yet - is restarted only once
+        // XF_BEACON_SEC of lock passed without a Crossfire beacon (true is returned at once: the restart is
+        // accepted, and held, also through a lock loss of that module). Its beacon -> only noted (see
+        // ResolveRestartWait). The module IP, not locked and not known as ELRS by its beacon (unknown, or
+        // Crossfire), only gets a joystick_begin past the throttle: a module that is not streaming takes the
+        // request from that alone. A restart that fails is sent again (R6, RetryRestart).
         public bool RestartStream()
         {
             if (stopRequested)
@@ -323,38 +453,43 @@ namespace ELRSWifiJoystick
         }
 
         // What a restart does now: decided under requestGate (PlanRestartLocked), done outside it (Carry).
-        private enum Plan { Crossfire, NoteCrossfire, Wait, Waiting, Activate, Restart }
+        private enum Plan { Crossfire, NoteCrossfire, Wait, Waiting, Activate, ActivateCrossfire, Restart }
 
         private readonly record struct RestartPlan(Plan Kind, int IntervalUs, int Channels, long SecondsLeft);
 
-        // Under requestGate. Crossfire: nothing - it ignores the request, and what joystick_end does to it is
-        // unknown. Locked and maybe Crossfire (KindUnsureLocked): held until XF_BEACON_SEC of lock passed
-        // without its beacon (restartWait). Not locked and of unknown kind: a plain joystick_begin, never a
-        // joystick_end - it may be a Crossfire that has not beaconed yet (the firewall blocks UDP, or it just
-        // came up), and a module that is not streaming takes the request from the begin alone. Else
-        // joystick_end + joystick_begin: frames of the old request keep coming until the module has it, so no
-        // mismatch restart for them, and from then on it streams the request.
+        // Under requestGate. Locked to Crossfire: nothing - it ignores the request, and what joystick_end does to
+        // it is unknown. Locked and maybe Crossfire (KindUnsureLocked): held until XF_BEACON_SEC of lock passed
+        // without its beacon (restartWait, restartWaitIp). Not locked and not known as ELRS (unknown, or
+        // Crossfire): a plain joystick_begin, never a joystick_end - it may be a Crossfire that has not beaconed
+        // yet (the firewall blocks UDP, or it just came up), and a module that is not streaming takes the request
+        // from the begin alone. Else joystick_end + joystick_begin: frames of the old request keep coming until
+        // the module has it, so no mismatch restart for them, and from then on it streams the request.
         private RestartPlan PlanRestartLocked(string ip, string? bound)
         {
             int iv = intervalUs, ch = channels;
             var k = KindLocked(ip);
-            if (k == ModuleKind.Crossfire) return new RestartPlan(Plan.Crossfire, iv, ch, 0);
-            if (ip == bound && KindUnsureLocked(ip))
+            bool locked = ip == bound;
+            if (locked && k == ModuleKind.Crossfire) return new RestartPlan(Plan.Crossfire, iv, ch, 0);
+            if (locked && KindUnsureLocked(ip))
             {
-                bool waiting = restartWait;
+                bool waiting = restartWait && restartWaitIp == ip;
                 restartWait = true;
+                restartWaitIp = ip;
                 var t = boundSince.AddSeconds(XF_BEACON_SEC) - Clock();
                 long left = (t.Ticks + TimeSpan.TicksPerSecond - 1) / TimeSpan.TicksPerSecond;
                 return new RestartPlan(waiting ? Plan.Waiting : Plan.Wait, iv, ch, left);
             }
-            if (ip != bound && k == ModuleKind.Unknown) return new RestartPlan(Plan.Activate, iv, ch, 0);
+            if (!locked && k != ModuleKind.Elrs)
+                return new RestartPlan(k == ModuleKind.Crossfire ? Plan.ActivateCrossfire : Plan.Activate, iv, ch, 0);
+            // a restart held for it (its window passed a moment ago, not resolved yet) is this one: not a second
+            if (restartWaitIp == ip) restartWait = false;
             AddCapped(restarted, ip);
             requestOf.Set(ip, (iv, ch), boundSource, ActivationIP);
             return new RestartPlan(Plan.Restart, iv, ch, 0);
         }
 
         // Does what PlanRestartLocked decided: logs, POSTs. why: the log line of a restart (default: the
-        // explicit one's). False for Crossfire.
+        // explicit one's). False for the locked Crossfire.
         private bool Carry(RestartPlan plan, string ip, string? why)
         {
             string what = $"{StreamRequest.Describe(plan.IntervalUs)}, {plan.Channels} channels";
@@ -374,14 +509,18 @@ namespace ELRSWifiJoystick
                 case Plan.Waiting:
                     return true;
                 case Plan.Activate:
-                    Log?.Invoke($"{ip} has sent no beacon yet (it may be Crossfire, which is never sent joystick_end): " +
-                                $"activating it with {what}");
-                    lock (lastActivation) lastActivation.Set(ip, Clock());
+                case Plan.ActivateCrossfire:
+                    Log?.Invoke(plan.Kind == Plan.ActivateCrossfire
+                        ? $"Crossfire module {ip} is not streaming to us: activating it (it always sends " +
+                          $"{StreamRequest.CrossfireChannels} channels at about 90 Hz)"
+                        : $"{ip} has sent no beacon yet (it may be Crossfire, which is never sent joystick_end): " +
+                          $"activating it with {what}");
+                    lock (lastActivation) lastActivation.Set(ip, new Activation(Clock(), plan.IntervalUs, plan.Channels));
                     Post(ip, restart: false, plan.IntervalUs, plan.Channels);
                     return true;
                 default:
                     Log?.Invoke(why ?? $"Restarting the stream of {ip}: {what}");
-                    SendRestart(ip, plan.IntervalUs, plan.Channels);
+                    SendRestart(ip, plan.IntervalUs, plan.Channels, fresh: true);
                     return true;
             }
         }
@@ -390,70 +529,131 @@ namespace ELRSWifiJoystick
             Log?.Invoke($"Crossfire module {ip} ignores the rate and channel count: it always sends " +
                         $"{StreamRequest.CrossfireChannels} channels at about 90 Hz");
 
-        // Locked, no beacon from it this session, 16 channels, not yet XF_BEACON_SEC of lock: maybe Crossfire.
+        // Locked, no beacon from it yet, 16 channels, not yet XF_BEACON_SEC of lock: maybe Crossfire.
         private bool KindUnsureLocked(string src) =>
             KindLocked(src) == ModuleKind.Unknown && boundChannels == StreamRequest.CrossfireChannels &&
             (Clock() - boundSince).TotalSeconds < XF_BEACON_SEC;
 
-        // A held restart, once the module is known: Crossfire -> noted, else restarted; the lock lost ->
-        // dropped (the next joystick_begin carries the request). Called from Tick and from every applied frame.
+        // A held restart (R2), once its module is known: a Crossfire beacon from it -> noted (once per session),
+        // dropped, also while it is not locked; else, while that module is locked and past its window ->
+        // restarted. Through a lock loss of its module it is held until that module locks again (a module that
+        // streams on through a WiFi pause keeps the old request until it is restarted; its window starts again
+        // with the lock). Dropped elsewhere when another module locks or is set as the module IP, when its ELRS
+        // beacon gets it a joystick_begin carrying the request (EnsureStreaming), on Stop and reset. Called from
+        // Tick and from every applied frame.
         private void ResolveRestartWait()
         {
             if (!restartWait) return;
             string? src = boundSource;
             RestartPlan plan;
+            string ip;
             lock (requestGate)
             {
-                if (!restartWait) return;
-                if (src != null && KindUnsureLocked(src)) return;
-                restartWait = false;
-                if (src == null || stopRequested) return;
-                if (KindLocked(src) == ModuleKind.Crossfire)
+                if (!restartWait || restartWaitIp == null) return;
+                if (stopRequested)
                 {
+                    restartWait = false;
+                    return;
+                }
+                ip = restartWaitIp;
+                if (KindLocked(ip) == ModuleKind.Crossfire)
+                {
+                    restartWait = false;
                     if (xfNoted) return;
                     xfNoted = true;
                     plan = new RestartPlan(Plan.NoteCrossfire, intervalUs, channels, 0);
                 }
-                else plan = PlanRestartLocked(src, src);
+                else
+                {
+                    if (src != ip || KindUnsureLocked(ip)) return;
+                    restartWait = false;
+                    plan = PlanRestartLocked(ip, ip);
+                }
             }
-            Carry(plan, src, null);
+            Carry(plan, ip, null);
+        }
+
+        // A failed restart (R6), sent again from retryAt while its module stays locked and is not known as
+        // Crossfire; else dropped: what it streams stays unknown (RestartFailed), so its next lock restarts it
+        // (R3), unless its ELRS beacon gets it a joystick_begin carrying the request first. Tick.
+        private void RetryRestart()
+        {
+            string ip;
+            int iv, ch;
+            lock (requestGate)
+            {
+                if (retryIp == null) return;
+                ip = retryIp;
+                if (stopRequested || boundSource != ip || KindLocked(ip) == ModuleKind.Crossfire)
+                {
+                    retryIp = null;
+                    return;
+                }
+                if (Clock() < retryAt) return;
+                retryIp = null;
+                iv = intervalUs;
+                ch = channels;
+                requestOf.Set(ip, (iv, ch), boundSource, ActivationIP);
+            }
+            SendRestart(ip, iv, ch, fresh: false);
         }
 
         // A module still streaming another request than the one asked for keeps it until it is restarted:
-        // another app's (seen as a channel count other than asked), or this app's from before a change made
-        // while it was not locked (requestOf). Only where it surely is no Crossfire, which ignores the request:
-        // ELRS by its beacon, a channel count Crossfire never sends, or XF_BEACON_SEC of lock without a Crossfire
-        // beacon (until then the restart waits, see PlanRestartLocked). A channel mismatch once per module and
-        // session, so a module that doesn't do what is asked is never restarted per frame; an old request once
-        // per change. The frames are applied all the same.
+        // another app's (seen as a channel count other than asked, R5), or this app's from before a change made
+        // while it was not locked (requestOf, R3). Only where it surely is no Crossfire, which ignores the
+        // request: ELRS by its beacon, a channel count Crossfire never sends, or XF_BEACON_SEC of lock without a
+        // Crossfire beacon (until then the restart waits, see PlanRestartLocked); a Crossfire with an old request
+        // is only noted. A channel mismatch once per module and session (never when that table is full), so a
+        // module that doesn't do what is asked is never restarted per frame; an old request once per change, and
+        // one a restart of it did not take (RequestUnknown) once per lock. Not while a restart of it is held or to
+        // be sent again, nor after its restart gave up while that lock lasts, nor for a frame of a module SetTarget
+        // let go of meanwhile. The frames are applied all the same.
         private void CheckRequest(string src, int count)
         {
             if (stopRequested || restartWait) return;
             RestartPlan plan;
-            string why;
+            string? why = null;
             lock (requestGate)
             {
-                bool mismatch = count != channels && !restarted.Contains(src) && restarted.Count < TableSize;
+                if (boundSource != src || restartWait || retryIp == src || gaveUpIp == src) return;
+                bool xf = KindLocked(src) == ModuleKind.Crossfire;
+                bool mismatch = !xf && count != channels && !restarted.Contains(src) && restarted.Count < TableSize;
                 bool old = requestOf.TryGetValue(src, out var had) && (had.IntervalUs != intervalUs || had.Channels != channels);
-                if (!mismatch && !old) return;
-                if (KindLocked(src) == ModuleKind.Crossfire) return;
-                string asked = $"{StreamRequest.Describe(intervalUs)}, {channels} channels";
-                why = mismatch
-                    ? $"{src} streams {count} channels, {channels} asked for (another app's request?) - restarting its stream"
-                    : had == RequestUnknown
-                    ? $"{src} may still stream its old request (Stop cut its restart short) - restarting its stream with {asked}"
-                    : $"{src} still streams {StreamRequest.Describe(had.IntervalUs)}, {had.Channels} channels, asked for " +
-                      $"before the change - restarting its stream with {asked}";
-                plan = PlanRestartLocked(src, src);
+                if (xf)
+                {
+                    if (!old || xfNoted) return;
+                    xfNoted = true;
+                    plan = new RestartPlan(Plan.NoteCrossfire, intervalUs, channels, 0);
+                }
+                else
+                {
+                    if (!mismatch && !old) return;
+                    string asked = $"{StreamRequest.Describe(intervalUs)}, {channels} channels";
+                    why = mismatch
+                        ? $"{src} streams {count} channels, {channels} asked for (another app's request?) - restarting its stream"
+                        : had == RequestUnknown
+                        ? $"{src} may still stream its old request (its last restart did not take) - restarting its stream with {asked}"
+                        : $"{src} still streams {StreamRequest.Describe(had.IntervalUs)}, {had.Channels} channels from " +
+                          $"before the change - restarting its stream with {asked}";
+                    plan = PlanRestartLocked(src, src);
+                }
             }
             Carry(plan, src, why);
         }
 
-        private void SetState(EngineState s, string detail = "") => StateChanged?.Invoke(s, detail);
+        // Every state said goes through here: what it says now decides whether "sending no stick data" is shown.
+        private void SetState(EngineState s, string detail = "")
+        {
+            state = s;
+            noStickShown = s == EngineState.Searching && detail == NoStickState;
+            StateChanged?.Invoke(s, detail);
+        }
 
-        // Fresh session state - a previous run's source lock must not leak into the next
-        // one, or the "locked -> Streaming" transition never fires again after a restart.
-        // What a module was asked for (requestOf) stays: it may still stream that.
+        // Fresh session state (R9) - a previous run's source lock must not leak into the next
+        // one, or the "locked -> Streaming" transition never fires again after a restart. The lock, the
+        // throttles and the restart state go; what is known about modules stays: their kind from beacons and
+        // what each was asked for (requestOf) - a module streams on after Stop, and an ELRS module that
+        // streams sends no beacon.
         internal void ResetSessionState()
         {
             boundSource = null;
@@ -466,10 +666,14 @@ namespace ELRSWifiJoystick
             lock (lastActivation) lastActivation.Clear();
             lock (requestGate)
             {
-                kinds.Clear();
                 restarted.Clear();
                 xfNoted = false;
                 restartWait = false;
+                restartWaitIp = null;
+                retryIp = null;
+                gaveUpIp = null;
+                restartSentIp = null;
+                restartTries = 0;
             }
             boundChannels = 0;
             map.Clear();
@@ -699,6 +903,11 @@ namespace ELRSWifiJoystick
             if (boundSource == null && (driving || writeFailed)) CenterJoystick();
             if (quiet) SetState(EngineState.Searching, "waiting for module");
 
+            // The module that sent placeholder frames went away (none for SOURCE_TIMEOUT_SEC): no more "sending
+            // no stick data". It is said again when they come back (WarnNoStickData).
+            if (noStickShown && boundSource == null && (Clock() - noStickLast).TotalSeconds > SOURCE_TIMEOUT_SEC)
+                SetState(EngineState.Searching, "waiting for module");
+
             // Activated OK but no data -> almost always Windows Firewall. Hint once.
             // Not if frames are arriving without stick data: that has its own explanation
             // and the firewall is demonstrably fine.
@@ -713,6 +922,7 @@ namespace ELRSWifiJoystick
                 SetState(EngineState.Searching, "activated, but no data (firewall? radio off?)");
             }
 
+            RetryRestart();
             ResolveRestartWait();
 
             string? target = ActivationIP;
@@ -793,10 +1003,25 @@ namespace ELRSWifiJoystick
                     // SetTarget may have changed the module IP since the check above (under this gate, with the
                     // lock it drops): never lock the module being left.
                     if (ActivationIP != null && src != ActivationIP) return;
+                    bool sent;
+                    Activation act;
+                    lock (lastActivation) sent = lastActivation.TryGetValue(src, out act);
                     lock (requestGate)
                     {
                         boundSince = now;
-                        restartWait = false;
+                        // a restart held or to be sent again for another module is not wanted now; one held for
+                        // this module goes on (R2): its window starts again with this lock
+                        if (restartWaitIp != src) restartWait = false;
+                        if (retryIp != src) retryIp = null;
+                        // a new lock: a module whose restart gave up is restarted again, once (R3, RequestUnknown)
+                        gaveUpIp = null;
+                        // R3: not known what it streams - what the last activation sent to it this session asked
+                        // for (it was not streaming then, or it streams what it streamed before, which nothing can
+                        // tell), else the request now (found streaming). Either way a change of the request made
+                        // while it is not locked from here on (a WiFi pause, a Stop) restarts it when it locks
+                        // again: it streams on through those, keeping the old one.
+                        if (!requestOf.TryGetValue(src, out _))
+                            requestOf.Set(src, sent ? (act.IntervalUs, act.Channels) : (intervalUs, channels), src, ActivationIP);
                         boundChannels = count;      // with the lock: a request change on another thread sees it
                         boundSource = src;
                     }
@@ -826,13 +1051,21 @@ namespace ELRSWifiJoystick
 
         // Warn once per source, not ~90x/sec. The usual cause is a known TBS firmware
         // regression, so point at the fix instead of leaving the user hunting a network fault.
+        // The state ends when no placeholder frame came for SOURCE_TIMEOUT_SEC (Tick: the module went away), and
+        // is said again (not the log line) when they come back.
         private void WarnNoStickData(string src)
         {
-            if (!AddCapped(noStickData, src)) return;
+            noStickLast = Clock();
+            if (!AddCapped(noStickData, src))
+            {
+                if (state == EngineState.Searching && !noStickShown && noStickData.Contains(src))
+                    SetState(EngineState.Searching, NoStickState);
+                return;
+            }
             Log?.Invoke($"!! {src} is streaming placeholder frames - no stick data. Either the radio " +
                         "is not feeding the module right now, or the firmware has the known regression " +
                         "(XF 6.42/6.48, WiFi 3.20 - use XF 6.31 or 6.36, WiFi up to 3.10).");
-            SetState(EngineState.Searching, "module found, but it is sending no stick data");
+            SetState(EngineState.Searching, NoStickState);
         }
 
         // Test hook: inject a synthetic arrival timestamp (Stopwatch ticks) for stats tests.
@@ -904,37 +1137,63 @@ namespace ELRSWifiJoystick
         private static bool AddCapped(HashSet<string> set, string ip) =>
             !set.Contains(ip) && set.Count < TableSize && set.Add(ip);
 
-        // An activation POST to ip, unless one went out less than 5 s ago (the throttle) or TableSize modules
-        // wait for an answer already (then the next beacon or tick tries again). why: logged when it goes out.
-        // idle: the module is known not to stream (its ELRS beacon), so it will stream what this asks for.
+        // An activation POST to ip, unless one went out less than THROTTLE_SEC ago (the throttle, R13) or
+        // TableSize modules wait for an answer already (then the next beacon or tick tries again). why: logged
+        // when it goes out. idle: the module is known not to stream (its ELRS beacon), so it will stream what this
+        // asks for (R3), and a restart held, in flight or to be sent again for it has nothing left to do (R2, R6).
         private void EnsureStreaming(string ip, string? why = null, bool idle = false)
         {
             if (stopRequested) return;
             DateTime now = Clock();
-            lock (lastActivation)
-            {
-                if (lastActivation.TryGetValue(ip, out var t) && (now - t).TotalSeconds < 5)
-                    return;
-                if (!PostSlotFree(ip)) return;
-                lastActivation.Set(ip, now);
-            }
             int iv, ch;
             lock (requestGate)
             {
                 iv = intervalUs;
                 ch = channels;
-                if (idle) requestOf.Set(ip, (iv, ch), boundSource, ActivationIP);
+            }
+            lock (lastActivation)
+            {
+                if (lastActivation.TryGetValue(ip, out var t) && (now - t.At).TotalSeconds < THROTTLE_SEC)
+                    return;
+                if (!PostSlotFree(ip)) return;
+                lastActivation.Set(ip, new Activation(now, iv, ch));
+            }
+            if (idle)
+            {
+                lock (requestGate)
+                {
+                    requestOf.Set(ip, (iv, ch), boundSource, ActivationIP);
+                    if (restartWaitIp == ip) restartWait = false;
+                    if (retryIp == ip) retryIp = null;
+                    // a restart of it still in flight decides nothing now: this joystick_begin, queued after it,
+                    // carries the request (its failure must not make what it streams unknown)
+                    if (restartSentIp == ip) restartSeq++;
+                }
             }
             if (why != null) Log?.Invoke(why);
             Post(ip, restart: false, iv, ch);
         }
 
-        // joystick_end + joystick_begin to ip, past the throttle (and it restarts the throttle).
-        private void SendRestart(string ip, int iv, int ch)
+        // joystick_end + joystick_begin to ip, past the throttle (and it restarts the throttle, R13). fresh: a new
+        // restart (a request change, an explicit one, a mismatch), with RestartTries sends of its own; else the
+        // retry of a failed one (R6). Only the last restart sent counts: its result is RestartFailed's.
+        private void SendRestart(string ip, int iv, int ch, bool fresh)
         {
+            DateTime now = Clock();
+            long seq;
+            lock (requestGate)
+            {
+                if (fresh) restartTries = 0;
+                restartTries++;
+                retryIp = null;
+                gaveUpIp = null;
+                seq = ++restartSeq;
+                restartSentIp = ip;
+                restartSentAt = now;
+            }
             Interlocked.Increment(ref restartCount);
-            lock (lastActivation) lastActivation.Set(ip, Clock());
-            Post(ip, restart: true, iv, ch);
+            lock (lastActivation) lastActivation.Set(ip, new Activation(now, iv, ch));
+            Post(ip, restart: true, iv, ch, seq);
         }
 
         // A POST to ip may be queued: its module has a chain already, or fewer than TableSize modules wait for
@@ -957,7 +1216,8 @@ namespace ELRSWifiJoystick
                 postChains.Remove(k);
         }
 
-        private void Post(string ip, bool restart, int iv, int ch)
+        // seq: a restart's (SendRestart).
+        private void Post(string ip, bool restart, int iv, int ch, long seq = 0)
         {
             if (stopRequested) return;      // stopping: the last packets of the loop activate nothing
             int s = Volatile.Read(ref session);
@@ -966,7 +1226,7 @@ namespace ELRSWifiJoystick
             if (ActivateOverride != null && !AsyncPostsForTest)
             {
                 // Test seam stays synchronous so tests remain deterministic.
-                if (Activate(ip, restart, iv, ch, s, token)) MarkActivated(ip, s);
+                Done(ip, restart, seq, Activate(ip, restart, iv, ch, s, token), s);
                 return;
             }
 
@@ -977,9 +1237,17 @@ namespace ELRSWifiJoystick
                 PruneChains();
                 postChains.TryGetValue(ip, out var prev);
                 postChains[ip] = (prev ?? Task.CompletedTask).ContinueWith(
-                    _ => { if (Activate(ip, restart, iv, ch, s, token)) MarkActivated(ip, s); },
+                    _ => Done(ip, restart, seq, Activate(ip, restart, iv, ch, s, token), s),
                     CancellationToken.None, TaskContinuationOptions.None, TaskScheduler.Default);
             }
+        }
+
+        // The result of an activation (on its POST's thread). ok: it took - its joystick_begin got a 2xx and, for a
+        // restart, its joystick_end too.
+        private void Done(string ip, bool restart, long seq, bool ok, int s)
+        {
+            if (ok) MarkActivated(ip, s);
+            else if (restart) RestartFailed(ip, seq, s);
         }
 
         // Test hook: waits until every POST queued so far went out (AsyncPostsForTest).
@@ -993,21 +1261,59 @@ namespace ELRSWifiJoystick
         // Queued in a session that has ended (Stop, or Stop and Start since).
         private bool Stale(int s) => stopRequested || s != Volatile.Read(ref session);
 
-        // One activation. A restart POSTs joystick_end first; its failure does not stop the
-        // joystick_begin (the module may simply not be streaming). True = the joystick_begin succeeded.
+        // One activation. A restart POSTs joystick_end first; its failure does not stop the joystick_begin (the
+        // module may simply not be streaming), but the restart took only when both got a 2xx: a streaming module
+        // that missed the joystick_end just moved its stream and kept its old request (R6). True = it took.
         // Nothing of a session that has ended goes out.
         private bool Activate(string ip, bool restart, int iv, int ch, int s, CancellationToken token)
         {
             bool ok = false;
             if (!Stale(s))
             {
-                if (restart) SendPost(new ActivationPost(ip, ActionEnd, 0, 0, true), token);
-                if (!Stale(s)) ok = SendPost(new ActivationPost(ip, ActionBegin, iv, ch, restart), token);
+                bool endOk = !restart || SendPost(new ActivationPost(ip, ActionEnd, 0, 0, true), token);
+                if (!Stale(s)) ok = SendPost(new ActivationPost(ip, ActionBegin, iv, ch, restart), token) && endOk;
             }
             // A restart Stop cut short (dropped from the queue, or abandoned in flight): the module may still
             // stream its old request, not what requestOf says since the restart was planned.
             if (restart && !ok && Stale(s)) RestartAbandoned(ip, iv, ch);
             return ok;
+        }
+
+        // A restart that failed (R6): the module kept what it streamed, as far as anyone knows, so what it was asked
+        // is unknown from now on (RequestUnknown, R3). Still streaming to us, it is sent again THROTTLE_SEC after the
+        // last send (RetryRestart, on Tick) while that module stays locked and is not known as Crossfire,
+        // RestartTries sends in all; then giving up is logged, and it is left alone while that lock lasts. Once it
+        // is not sent again (given up, the lock lost, a new session, another module IP), its next lock restarts it
+        // (CheckRequest) - unless its ELRS beacon gets it a joystick_begin carrying the request first (it was not
+        // streaming then). Only the last restart sent counts: when a newer one went out (or waits behind this
+        // one), or such a joystick_begin was queued after it, that decides.
+        private void RestartFailed(string ip, long seq, int s)
+        {
+            string msg;
+            lock (requestGate)
+            {
+                if (Stale(s) || seq != restartSeq) return;
+                if (KindLocked(ip) == ModuleKind.Crossfire) return;
+                requestOf.Set(ip, RequestUnknown, boundSource, ActivationIP);
+                if (boundSource != ip) return;
+                if (restartTries >= RestartTries)
+                {
+                    gaveUpIp = ip;
+                    msg = $"The restart of {ip} failed {restartTries} times - giving up: it may still stream its old rate " +
+                          "and channel count";
+                }
+                else
+                {
+                    retryIp = ip;
+                    retryAt = restartSentAt.AddSeconds(THROTTLE_SEC);
+                    var left = retryAt - Clock();
+                    msg = left > TimeSpan.Zero
+                        ? $"The restart of {ip} failed - sending it again in " +
+                          $"{(left.Ticks + TimeSpan.TicksPerSecond - 1) / TimeSpan.TicksPerSecond} s"
+                        : $"The restart of {ip} failed - sending it again now";
+                }
+            }
+            Log?.Invoke(msg);
         }
 
         // What ip streams is not known, but likely not the request: its next lock restarts it (CheckRequest).

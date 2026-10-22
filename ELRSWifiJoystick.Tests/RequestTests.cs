@@ -408,22 +408,85 @@ public class RequestTests
     }
 
     [Fact]
-    public void Restart_Wait_DroppedWhenTheLockIsLost()
+    public void Restart_Wait_HeldThroughALockLoss()
     {
+        // R2: a module that streams on through a WiFi pause keeps the old request until it is restarted (in
+        // discovery an ELRS module that streams sends no beacon, and a joystick_begin to it changes nothing): the
+        // held restart goes out when it locks again, after its window. (core: Restart_Wait_HeldThroughALockLoss)
         var h = new Harness();
         h.Same(DefIp, 16, 16000);
         h.Engine.SetRequest(2000, 16);
-        h.Clock.Advance(3.1);
-        h.Engine.Tick();                                      // lock released
+        h.Clock.Advance(3.5);
+        h.Engine.Tick();                                      // lock released: held
         Assert.Null(h.Engine.Source);
         h.Clock.Advance(30.0);
         h.Engine.Tick();
+        Assert.Empty(h.Ends);                                 // not while it is not locked
+        // the same module back, still 16 channels and no beacon: 20 s of lock, then the restart
+        for (int i = 0; i < 19; i++) { h.Same(DefIp, 16, 16000); h.Engine.Tick(); h.Clock.Advance(1); }
         Assert.Empty(h.Ends);
-        // a new lock (another module) starts clean
-        h.Same("192.168.1.51", 16, 100);
-        h.Clock.Advance(1);
-        h.Same("192.168.1.51", 16, 100);
+        for (int i = 0; i < 2; i++) { h.Same(DefIp, 16, 16000); h.Engine.Tick(); h.Clock.Advance(1); }
+        Assert.Equal(DefIp, Assert.Single(h.Ends).Ip);
+        Assert.Equal(2000, h.RestartBegins[0].IntervalUs);
+        for (int i = 0; i < 60; i++) { h.Same(DefIp, 16, 16000); h.Engine.Tick(); h.Clock.Advance(1); }
+        Assert.Single(h.Ends);
+        Assert.Equal(1, h.CountLog("may be Crossfire"));
+
+        // A new lock (another module) drops it. (The request goes back to what the module streams meanwhile, so
+        // only a held restart could restart it when it is back: R3 has nothing to do.)
+        h = new Harness();
+        h.Same(DefIp, 16, 16000);
+        h.Engine.SetRequest(2000, 16);
+        h.Clock.Advance(3.5);
         h.Engine.Tick();
+        h.Engine.SetRequest(4000, 16);                        // not locked: stored
+        h.Same("192.168.1.51", 16, 100);
+        for (int i = 0; i < 30; i++) { h.Clock.Advance(1); h.Same("192.168.1.51", 16, 100); h.Engine.Tick(); }
+        h.Clock.Advance(3.5);
+        h.Engine.Tick();
+        for (int i = 0; i < 30; i++) { h.Same(DefIp, 16, 16000); h.Engine.Tick(); h.Clock.Advance(1); }
+        Assert.Empty(h.Ends);
+
+        // another module IP drops it (R7), as does a new session (R9)
+        h = new Harness();
+        h.Same(DefIp, 16, 16000);
+        h.Engine.SetRequest(2000, 16);
+        h.Engine.SetTarget("10.0.0.7");
+        h.Engine.SetRequest(4000, 16);
+        h.Engine.SetTarget("");                               // discovery again
+        for (int i = 0; i < 30; i++) { h.Same(DefIp, 16, 16000); h.Engine.Tick(); h.Clock.Advance(1); }
+        Assert.Equal(DefIp, h.Engine.Source);
+        Assert.Empty(h.Ends);
+        h = new Harness();
+        h.Same(DefIp, 16, 16000);
+        h.Engine.SetRequest(2000, 16);
+        h.Engine.ResetSessionState();
+        h.Engine.SetRequest(4000, 16);                        // back to what it streams: nothing to restart
+        for (int i = 0; i < 30; i++) { h.Same(DefIp, 16, 16000); h.Engine.Tick(); h.Clock.Advance(1); }
+        Assert.Empty(h.Ends);
+
+        // its beacon says Crossfire during the pause: noted, never restarted
+        h = new Harness();
+        h.Same(DefIp, 16, 16000);
+        h.Engine.SetRequest(2000, 16);
+        h.Clock.Advance(3.5);
+        h.Engine.Tick();
+        h.Packet(Frames.Ascii("VELOCIDRONE"), DefIp);
+        h.Engine.Tick();
+        Assert.Equal(1, h.CountLog("Crossfire module 192.168.1.50 ignores the rate and channel count"));
+        for (int i = 0; i < 30; i++) { h.Same(DefIp, 16, 16000); h.Engine.Tick(); h.Clock.Advance(1); }
+        Assert.Empty(h.Ends);
+
+        // its ELRS beacon during the pause: it is not streaming, so the activation carries the request - nothing
+        // is held any more (a restart at the next lock would only pause its stream)
+        h = new Harness();
+        h.Same(DefIp, 16, 16000);
+        h.Engine.SetRequest(2000, 16);
+        h.Clock.Advance(3.5);
+        h.Engine.Tick();
+        h.Packet(Frames.Ascii("ELRS"), DefIp);
+        Assert.Equal(new ActivationPost(DefIp, JoystickEngine.ActionBegin, 2000, 16, false), h.Posts.Last());
+        for (int i = 0; i < 30; i++) { h.Same(DefIp, 16, 16000); h.Engine.Tick(); h.Clock.Advance(1); }
         Assert.Empty(h.Ends);
     }
 
@@ -613,7 +676,7 @@ public class RequestTests
     }
 
     [Fact]
-    public void Kinds_FromBeacons_ThisSession()
+    public void Kinds_FromBeacons_KeptAcrossSessions()
     {
         var h = new Harness();
         h.Packet(Frames.Ascii("ELRS"), "10.0.0.1");
@@ -628,10 +691,10 @@ public class RequestTests
         h.Engine.ActivationIP = "10.0.0.9";
         h.Packet(Frames.Ascii("ELRS"), "10.0.0.4");
         Assert.Equal(ModuleKind.Unknown, h.Engine.KindOf("10.0.0.4"));
-        // a new session forgets them
+        // a new session keeps them (R9): an ELRS module streams on after Stop, and never beacons while it streams
         h.Engine.ResetSessionState();
-        Assert.Equal(ModuleKind.Unknown, h.Engine.KindOf("10.0.0.1"));
-        Assert.Equal(ModuleKind.Unknown, h.Engine.KindOf("10.0.0.2"));
+        Assert.Equal(ModuleKind.Elrs, h.Engine.KindOf("10.0.0.1"));
+        Assert.Equal(ModuleKind.Crossfire, h.Engine.KindOf("10.0.0.2"));
     }
 
     [Fact]
@@ -696,7 +759,8 @@ public class RequestTests
         h.Same(DefIp, 16, 100);                               // back, still at 250 Hz: ELRS (beacon), at once
         Assert.Single(h.Ends);
         Assert.Equal(2000, Assert.Single(h.RestartBegins).IntervalUs);
-        Assert.Equal(1, h.CountLog("192.168.1.50 still streams 250 Hz, 16 channels, asked for before the change"));
+        Assert.Equal(1, h.CountLog("192.168.1.50 still streams 250 Hz, 16 channels from before the change - restarting " +
+                                   "its stream with 500 Hz, 16 channels"));
         for (int i = 0; i < 10; i++) h.Same(DefIp, 16, 100);  // once per change
         h.Clock.Advance(3.5);
         h.Engine.Tick();
@@ -705,22 +769,42 @@ public class RequestTests
     }
 
     [Fact]
-    public void Request_KnownStale_WaitsForTheKind_LikeAnyRestart()
+    public void Request_KnownStale_AfterANewSession_RestartsAtOnce()
     {
-        // The kind is forgotten with the session (Stop/Start): 16 channels and no beacon may be Crossfire.
+        // The kind stays with the module across sessions (R9): an ELRS module that streams an old request of this
+        // app is restarted as soon as it locks.
         var h = new Harness();
         h.Packet(Frames.Ascii("ELRS"), DefIp);
         h.Same(DefIp, 16, 100);
         h.Clock.Advance(3.5);
         h.Engine.Tick();
         h.Engine.SetRequest(2000, 16);
-        h.Engine.ResetSessionState();                         // the kinds go, what was asked of it stays
+        h.Engine.ResetSessionState();                         // the kinds and what was asked of it stay
         h.Same(DefIp, 16, 100);
-        Assert.Empty(h.Ends);
-        Assert.Equal(1, h.CountLog("may be Crossfire"));
-        for (int i = 0; i < 20; i++) { h.Clock.Advance(1); h.Same(DefIp, 16, 100); h.Engine.Tick(); }
         Assert.Single(h.Ends);
         Assert.Equal(2000, h.RestartBegins[0].IntervalUs);
+        Assert.Equal(0, h.CountLog("may be Crossfire"));
+    }
+
+    [Fact]
+    public void Request_KnownStale_WaitsForTheKind_LikeAnyRestart()
+    {
+        // A module of unknown kind (16 channels, no beacon) that streams an old request of this app may be
+        // Crossfire: its restart waits like any other.
+        var h = new Harness();
+        h.Same(DefIp, 16, 100);
+        for (int i = 0; i < 21; i++) { h.Clock.Advance(1); h.Same(DefIp, 16, 100); }
+        Assert.True(h.Engine.RestartStream());                // past the kind window: restarted with 250 Hz
+        Assert.Single(h.Ends);
+        h.Clock.Advance(3.5);
+        h.Engine.Tick();                                      // the lock lost
+        h.Engine.SetRequest(2000, 16);                        // not locked: nothing sent now
+        h.Same(DefIp, 16, 100);                               // back, with the old request
+        Assert.Single(h.Ends);
+        Assert.Equal(1, h.CountLog("may be Crossfire"));
+        for (int i = 0; i < 20; i++) { h.Clock.Advance(1); h.Same(DefIp, 16, 100); h.Engine.Tick(); }
+        Assert.Equal(2, h.Ends.Count);
+        Assert.Equal(2000, h.RestartBegins[1].IntervalUs);
     }
 
     [Fact]
@@ -779,9 +863,14 @@ public class RequestTests
         Assert.Equal(new ActivationPost(XfIp, JoystickEngine.ActionBegin, 4000, 16, false), Assert.Single(h.Posts));
         Assert.Equal(1, h.CountLog("192.168.2.138 has sent no beacon yet (it may be Crossfire, which is never sent " +
                                    "joystick_end): activating it with 250 Hz, 16 channels"));
+        // known as Crossfire now, still not streaming to us (R4): again only a joystick_begin past the throttle
         h.Packet(Frames.Ascii("VELOCIDRONE"), XfIp);
-        Assert.False(h.Engine.RestartStream());               // now known: nothing to restart
+        h.Posts.Clear();
+        Assert.True(h.Engine.RestartStream());
         Assert.Empty(h.Ends);
+        Assert.Equal(new ActivationPost(XfIp, JoystickEngine.ActionBegin, 4000, 16, false), Assert.Single(h.Posts));
+        Assert.Equal(1, h.CountLog("Crossfire module 192.168.2.138 is not streaming to us: activating it (it always " +
+                                   "sends 16 channels at about 90 Hz)"));
         Assert.Equal(0, h.Engine.RestartCount);
     }
 

@@ -241,7 +241,7 @@ namespace ELRSWifiJoystick
             if (Engine.IsRunning)
             {
                 Engine.Stop();
-                Engine.ActivationIP = null;   // forget any forced IP - next Start is a clean slate
+                Engine.ActivationIP = null;   // forget any forced IP - next Start auto-discovers (README, Help say so)
                 ModuleIp = "";
             }
             else

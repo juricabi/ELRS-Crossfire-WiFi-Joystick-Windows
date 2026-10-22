@@ -21,7 +21,7 @@ Both radios use the same "WiFi joystick" protocol (the one VelociDrone Mobile sp
 >
 > **v3.3**: the **rate and channel count are settings** - ELRS is asked for **250 Hz × 16 channels** by default (was 100 Hz × 8), adjustable live - and **CH9-CH16 are joystick buttons 1-8**.
 
-> 🐧 **On Linux?** [elrs-crossfire-wifi-joystick-linux](https://github.com/juricabi/elrs-crossfire-wifi-joystick-linux) does the same there (uinput joystick, terminal UI and a web page), with the same protocol behaviour, defaults and axis order.
+> 🐧 **On Linux?** [ELRS-Crossfire-WiFi-Joystick-Linux](https://github.com/juricabi/ELRS-Crossfire-WiFi-Joystick-Linux) does the same there (uinput joystick, terminal UI and a web page), with the same protocol behaviour, defaults and axis order.
 
 ## ✨ Features
 
@@ -103,7 +103,8 @@ Both radios use the same "WiFi joystick" protocol (the one VelociDrone Mobile sp
 
 The engine and the view model have a full xUnit test suite (`ELRSWifiJoystick.Tests/`)
 covering the protocol (beacons, channel frames, malformed packets), the source-lock state
-machine (and the centering when the lock goes), activation throttling, the request (rate/channels) and stream restarts, the channel
+machine (and the centering when the lock goes), activation throttling, the request (rate/channels) and stream restarts
+(the rules R1-R13 at the top of `JoystickEngine.cs`, the same as the Linux version's), the channel
 to axis/button mapping, rate/jitter math, socket-level lifecycle (restart, port-in-use, clean
 shutdown), both command lines, and the UI state mapping (banner, axis bars, drop-downs, log
 capping). Tests inject a fake clock/output/activator, so they need neither vJoy nor a module.
@@ -183,7 +184,8 @@ the "Velocidrone Mobile" support built into the TBS WiFi module.
 4. **Optional controls:**
    - **Module IP** — leave blank for auto-discovery, or type your module's IP and press
      **Connect** to target a specific module (skips the beacon wait; find the IP on the
-     module's WiFi web page).
+     module's WiFi web page). **Stop** clears it (`s` in the CLI too), so the next Start
+     auto-discovers again: type the IP and Connect to target the module again.
    - **Port** — the UDP port (default `11000`); change it while stopped.
    - **Rate / Channels** — what the module is asked for (default **250 Hz**, **16 channels**);
      ExpressLRS takes a change by restarting its stream (see [Rate & channels](#-rate--channels)).
@@ -196,7 +198,8 @@ the "Velocidrone Mobile" support built into the TBS WiFi module.
    - When the stream stops (3 s without data: radio off, out of range) or you **Connect** to
      another module, the vJoy axes go to the center and its buttons are released, so the sim never
      keeps a stale stick or switch; they follow the sticks again as soon as data is back. Stopping
-     and closing the window do the same before the device is let go.
+     and closing the window do the same before the device is let go. Shorter gaps hold the last
+     values, and **Connect** to the module that streams now changes nothing.
 
 **Command-line (optional):** `ELRSWifiJoystick.exe [port] [--tx <module-ip>] [--rate HZ | --interval US] [--channels N]`
 — e.g. `ELRSWifiJoystick.exe --tx 192.168.2.138` pre-fills the module IP on launch, and
@@ -206,8 +209,9 @@ not `a.b.c.d` - is reported in a message box, which says what the app uses inste
 
 > **Stopping the module's stream:** once activated, the module keeps broadcasting channel data
 > until it is powered off, rebooted, or its WiFi drops. Closing this app only stops *reading*
-> the stream. Crossfire has **no remote stop command**; ELRS has one (`joystick_end`), which
-> the app sends only to restart the stream with a new rate or channel count.
+> the stream. ELRS has a remote stop command (`joystick_end`), which the app sends only to
+> restart the stream with a new rate or channel count. How Crossfire responds to `joystick_end`
+> is unknown, so the app does not send it one (to a module known as Crossfire by its beacon).
 
 ## ⚡ Rate & channels
 
@@ -222,24 +226,74 @@ Channels: **4 to 16**. The GUI offers these values in two drop-downs; on the com
 (`--rate`, `--interval`, `--channels`, GUI and CLI) any rate from 10 to 1000 Hz (interval
 1000-100000 µs) works.
 
-- **ExpressLRS** (3.4.0 and later) streams what is asked for. It takes a new request only
-  while it is not streaming, so a change while it streams **restarts its stream**: the app
-  POSTs `action=joystick_end`, then `joystick_begin` with the new values. The joystick holds
-  its position for that moment and the source lock stays. If an ELRS module (known by its
-  beacon, or by a channel count Crossfire never sends) streams another channel count than
-  asked - another app's request - the app restarts it once per session.
-  A module the app hasn't heard a beacon from yet that streams 16 channels might be Crossfire
-  (an ELRS module stops beaconing while it streams; Crossfire beacons about every 8 s): its
-  restart waits until 20 s of streaming passed without a Crossfire beacon, and the log says so.
-  A change made while the module is not connected (a WiFi dropout, or while the app is stopped)
-  reaches a module the app started with the old values when it is back, by the same restart.
-  What a module streams when the app finds it streaming already is not known (the frames don't
-  carry the rate): if the stats show another rate, pick another one and back, or press `a` in
-  the CLI. A module IP that is not connected and has sent no beacon yet is only activated
-  (`joystick_begin`, no `joystick_end`): it may be a Crossfire.
+- **ExpressLRS** (3.4.0 and later) streams what it is asked for, but takes a new request only
+  while it is not streaming: a request to a streaming module just moves the stream. So when you
+  change the rate or the channels while a module that is surely ELRS streams to the app - known
+  by its beacon, or streaming a channel count other than 16, which Crossfire never sends - the
+  app **restarts its stream** at once: it POSTs `action=joystick_end`, then `joystick_begin`
+  with the new values (`Restarting the stream of <ip>: 500 Hz, 16 channels`). The joystick
+  holds its position for that moment and the source lock stays.
 - **TBS Crossfire / Tracer** starts on the same request but **ignores both values**: it always
-  sends 16 channels at about 90 Hz. The app never sends it `joystick_end`; while connected to
-  one, the drop-downs are disabled and the stats say "Crossfire: its own rate".
+  sends 16 channels at about 90 Hz. A module known as Crossfire by its beacon is never sent
+  `joystick_end` (what Crossfire does with it is unknown): a change while it streams is only
+  logged, once per session (`Crossfire module <ip> ignores the rate and channel count ...`);
+  while connected to one, the drop-downs are disabled and the stats say "Crossfire: its own rate".
+- **A module of unknown kind** that streams 16 channels and sent no beacon (ELRS beacons only
+  while it is not streaming, so an ELRS module still streaming from before has sent none) might
+  be Crossfire. Its restart (a change, `a`, or one of the cases below) waits until 20 s after the
+  app locked on to it, and is dropped when a Crossfire beacon arrives first; the log says so
+  (`<ip> may be Crossfire (no beacon from it yet) ...`). Crossfire beacons about every 8 s also
+  while streaming, so after 20 s without one it is taken as ELRS. A restart waiting like this is
+  kept when the module goes quiet and goes out when it streams to the app again (after its
+  20 s); it is dropped when the module's ELRS beacon meanwhile gets it a `joystick_begin` with
+  the request, or when another module takes over.
+- **A change while the module does not stream to the app** (during its activation, a WiFi
+  dropout of more than 3 s, while the app is stopped, or before you connect to it) goes into its
+  next `joystick_begin`. The app remembers what it last asked each module and what their beacons
+  said (up to 8 modules, never forgetting the kind of the one streaming now), and keeps both
+  across Stop and Start or a port change (those clear the lock, the 5 s limits and waiting
+  restarts; Stop also clears the Module IP): a module that streams to the app again with an
+  older request (it streams on through those) is restarted then, by the rules above (`<ip> still
+  streams 250 Hz, 16 channels from before the change - restarting its stream with ...`).
+- **At startup** the values from the command line only set the next `joystick_begin`. A module
+  still streaming from before (it keeps streaming after the app quits) keeps its old rate - the
+  frames don't carry it, the stats show it: pick another rate and back, or press `a` in the CLI.
+  Only a different channel count is fixed by itself, once per module and session: a module that
+  is surely ELRS and streams another channel count than asked (left over from another app or
+  run) is restarted at once (`<ip> streams 8 channels, 16 asked for ...`); one of unknown kind
+  that streams 16 while fewer are asked, once its 20 s passed without a Crossfire beacon.
+- **CLI `a` (`restart`)** restarts the module streaming to the app by the rules above
+  (Crossfire: logged, nothing sent). When none streams, the module IP (`--tx`, `t`) is
+  restarted if its beacon said ELRS; otherwise (no beacon yet, or Crossfire) it only gets a
+  `joystick_begin` at once, never `joystick_end` (`<ip> has sent no beacon yet (it may be
+  Crossfire, which is never sent joystick_end): activating it with ...`): a module that is not
+  streaming takes the request from that alone. Without a module IP nothing is sent (`No module
+  to restart ...`).
+- **A restart that fails** (its `joystick_end` or its `joystick_begin` gets no 2xx answer)
+  changed nothing. It is sent again 5 s after its last send while the module still streams to
+  the app and is not known as Crossfire, 3 sends per change in all - the first and up to 2 more
+  (`The restart of <ip> failed - sending it again in 5 s`) - then the app gives up and says so
+  (`... failed 3 times - giving up ...`); pick another rate and back, or press `a` in the CLI,
+  to try again. The app then no longer knows what the module streams: if the app gave up, or the
+  module stopped streaming to the app before the next send (a dropout of more than 3 s, Stop and
+  Start, Connect to another module), it is restarted once more when it streams to the app again,
+  by the rules above (`<ip> may still stream its old request (its last restart did not take) -
+  restarting its stream with ...`) - unless its ELRS beacon got it a `joystick_begin` with the
+  request meanwhile. A plain `joystick_begin`
+  that fails is never turned into a restart: the next beacon, or the module IP's next try,
+  sends it again after 5 s.
+- **Connect** (`t` in the CLI) to the module that streams now keeps it: nothing is sent,
+  nothing centered (`Target module set to <ip> - streaming from it already`). Another module IP
+  lets go of the module streaming now (the joystick centers), asks the new one at once with the
+  current rate and channels (`connecting to <ip>`) and sends the module being left nothing: a
+  restart waiting for it is dropped. The app changes the rate or the channels at once, for the
+  module streaming then: to change them for the new module only, pick them after Connect. (The
+  engine can change both in one step, `SetTarget(ip, interval, channels)`, as the Linux app's
+  settings do; the GUI and the CLI change one at a time.)
+- **Timing**: automatic activations (on a beacon, and the module IP's tries while nothing
+  streams) go out once per module per 5 s at most. Connect, `a` and restarts are not limited by
+  that, and a restart starts the 5 s over. Lock loss, sending again and waiting restarts are
+  checked at least 10 times a second, whatever arrives.
 - The stats show what arrives next to what was asked: `Rate: 249 Hz (asked 250)`, and
   `8 ch (asked 16)` when the channel count differs.
 - CLI: `r` / `c` keys (or `rate <hz>`, `interval <us>`, `channels <n>` on stdin) change it,
@@ -353,10 +407,13 @@ netsh advfirewall firewall add rule name="ELRS WiFi Joystick" dir=in action=allo
 - **Activation**: HTTP `POST http://<module-ip>/udpcontrol` with form body
   `action=joystick_begin&interval=4000&channels=16` (the request: see
   [Rate & channels](#-rate--channels)). The module replies `ok` and begins
-  streaming. (Activation POSTs are throttled to once per 5 s per module.)
+  streaming. (Automatic activations - on a beacon, and the module IP's tries - are throttled to
+  once per 5 s per module; Connect and the CLI's `a` are not.)
 - **Restart** (ELRS only, to apply a new request): `action=joystick_end`, then the
-  `joystick_begin` above - past the throttle, which it then restarts. POSTs to one module go
-  out one after the other, off the receive thread.
+  `joystick_begin` above - past the throttle, which it then restarts. It counts as done only
+  when both got a 2xx; a failed one is sent again 5 s after its last send while the module
+  streams to the app, 3 sends in all (the first and up to 2 more). POSTs to one module go out
+  one after the other, off the receive thread.
 - **Transport**: UDP packets on port 11000
 - **Packet Format**:
   - Byte 0: Frame type (1 = channels)
@@ -376,7 +433,8 @@ netsh advfirewall firewall add rule name="ELRS WiFi Joystick" dir=in action=allo
   and ignores any other source until the bound one is silent for 3 s, so two radios on the
   same network can't interfere. While no module drives it (that lock lost, another module IP
   connected, before the first frame, after Stop) the joystick is centered with its buttons
-  released.
+  released; channels a frame does not carry are centered / released, and shorter gaps hold the
+  last values.
 
 ### Performance Characteristics
 - **Latency**: < 10ms from TX to vJoy (a new frame every 4 ms at the default 250 Hz)

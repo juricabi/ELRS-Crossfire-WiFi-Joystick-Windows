@@ -359,7 +359,8 @@ channels at about 90 Hz. CH1-CH8 are the vJoy axes (X Y RX RY RZ Z SL0 SL1),
 CH9-CH16 joystick buttons 1-8 (pressed above 75 %).
 
 While running (keys on a console, or lines on redirected stdin):
-  s               Start / stop (stdin also: start, stop)
+  s               Start / stop (stdin also: start, stop); stop clears the
+                  module IP, so the next start auto-discovers
   t [ip]          Set module IP and connect (empty = auto-discover)
   p [port]        Change the UDP port (only while stopped; applying starts)
   r [hz]          Rate to ask for (stdin also: rate <hz>, interval <us>)
