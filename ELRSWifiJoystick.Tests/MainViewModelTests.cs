@@ -371,6 +371,75 @@ public class MainViewModelTests
     }
 
     [Fact]
+    public void Shutdown_ReleasesTheModule()
+    {
+        // Closing the window: the module streaming to the app gets joystick_end alone (R14), and the log says so.
+        var vm = NewVm(out var posts);
+        Feed(vm, Frames.Ascii("ELRS"));
+        Feed(vm, Frames.Channels(Enumerable.Repeat(100, 16).ToArray()));
+        posts.Clear();
+        vm.Shutdown();
+        Assert.Equal(new[] { Harness.Release("192.168.1.50") }, posts);
+        Assert.Contains("Releasing 192.168.1.50: joystick_end, so it stops streaming and broadcasts again", vm.LogText);
+        Assert.Contains("Released 192.168.1.50: it broadcasts again, any app can connect to it", vm.LogText);
+    }
+
+    [Fact]
+    public void StopButton_ReleasesTheModule_AndItsToolTipSaysSo()
+    {
+        const int port = 27418;
+        var vm = NewVm(out var posts, port);
+        vm.Engine.SkipVJoyForTest = true;
+        Assert.Equal(MainViewModel.StartToolTip, vm.StartStopToolTip);
+        var changed = new List<string?>();
+        vm.PropertyChanged += (_, a) => { lock (changed) changed.Add(a.PropertyName); };
+        try
+        {
+            vm.StartStopCommand.Execute(null);                // Start
+            Assert.True(vm.IsRunning);
+            Assert.Equal(MainViewModel.StopToolTip, vm.StartStopToolTip);
+            lock (changed) Assert.Contains(nameof(MainViewModel.StartStopToolTip), changed);
+            Assert.Contains("release the module", vm.StartStopToolTip);
+            Assert.Contains("Closing the app does the same", vm.StartStopToolTip);
+            // only one known as Crossfire by its beacon is skipped: an unknown kind gets it (R14)
+            Assert.Contains("A module known as Crossfire by its beacon is not sent it", vm.StartStopToolTip);
+            Thread.Sleep(250);
+            var deadline = Environment.TickCount64 + 3000;
+            var f16 = Frames.Channels(Enumerable.Repeat(100, 16).ToArray());
+            while (vm.Engine.Source == null && Environment.TickCount64 < deadline)
+            {
+                using var c = new System.Net.Sockets.UdpClient();
+                c.Send(f16, f16.Length, new IPEndPoint(IPAddress.Loopback, port));
+                Thread.Sleep(20);
+            }
+            Assert.Equal("127.0.0.1", vm.Engine.Source);
+            vm.StartStopCommand.Execute(null);                // Stop
+            lock (posts) Assert.Equal(new[] { Harness.Release("127.0.0.1") }, posts.Where(Harness.IsRelease));
+            deadline = Environment.TickCount64 + 3000;
+            while (vm.IsRunning && Environment.TickCount64 < deadline) Thread.Sleep(20);
+            Assert.False(vm.IsRunning);
+            Assert.Equal(MainViewModel.StartToolTip, vm.StartStopToolTip);
+        }
+        finally
+        {
+            vm.Shutdown();
+        }
+        lock (posts) Assert.Single(posts, Harness.IsRelease);  // Shutdown after Stop: no second release
+    }
+
+    [Fact]
+    public void Shutdown_Twice_ReleasesOnce()
+    {
+        // A Windows logoff or shutdown stops the app (App.OnSessionEnding), and the window's Closing may still come
+        var vm = NewVm(out var posts);
+        Feed(vm, Frames.Channels(Enumerable.Repeat(100, 16).ToArray()));
+        Assert.Equal("192.168.1.50", vm.Engine.Source);
+        vm.Shutdown();
+        vm.Shutdown();
+        Assert.Equal(new[] { Harness.Release("192.168.1.50") }, posts.Where(Harness.IsRelease));
+    }
+
+    [Fact]
     public void TrayText_ReflectsStreamingSource()
     {
         var vm = NewVm(out _);

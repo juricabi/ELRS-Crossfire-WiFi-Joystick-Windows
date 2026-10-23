@@ -180,9 +180,28 @@ namespace ELRSWifiJoystick
         public string VJoyText { get => _vjoyText; private set => SetField(ref _vjoyText, value); }
 
         private bool _isRunning;
-        public bool IsRunning { get => _isRunning; private set { if (SetField(ref _isRunning, value)) OnChanged(nameof(IsPortEditable)); } }
+        public bool IsRunning
+        {
+            get => _isRunning;
+            private set
+            {
+                if (!SetField(ref _isRunning, value)) return;
+                OnChanged(nameof(IsPortEditable));
+                OnChanged(nameof(StartStopToolTip));
+            }
+        }
 
         public bool IsPortEditable => !IsRunning;
+
+        // What the Start/Stop button does: Stop (and closing the app) releases the module (R14).
+        public string StartStopToolTip => IsRunning ? StopToolTip : StartToolTip;
+
+        internal const string StartToolTip =
+            "Start listening: the app finds the module by its broadcast, or connects to the Module IP.";
+        internal const string StopToolTip =
+            "Stop listening and release the module: it gets joystick_end, stops streaming to this PC and broadcasts " +
+            "again, so any app can connect to it. Closing the app does the same. A module known as Crossfire by its " +
+            "beacon is not sent it: it broadcasts while streaming, so other apps find it anyway.";
 
         private bool _isStreaming;
         public bool IsStreaming { get => _isStreaming; private set => SetField(ref _isStreaming, value); }
@@ -213,6 +232,7 @@ namespace ELRSWifiJoystick
             EnsureFirewallAsync();
         }
 
+        // On closing: stops and releases the module, waiting at most 1.5 s for its answer (R14).
         public void Shutdown() => Engine.StopAndWait(700);
 
         private void StartEngine(bool refreshFirewall = true)
@@ -240,7 +260,7 @@ namespace ELRSWifiJoystick
         {
             if (Engine.IsRunning)
             {
-                Engine.Stop();
+                Engine.Stop();                // releases the module (R14): it broadcasts again for any app
                 Engine.ActivationIP = null;   // forget any forced IP - next Start auto-discovers (README, Help say so)
                 ModuleIp = "";
             }

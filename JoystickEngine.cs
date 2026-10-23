@@ -20,12 +20,13 @@ namespace ELRSWifiJoystick
 
     // One activation POST to a module's /udpcontrol, as the test seam sees it. Action is joystick_begin
     // (with IntervalUs and Channels: the request) or joystick_end (nothing else is sent; both 0).
-    // Restart: part of a restart (joystick_end, then joystick_begin).
+    // Restart: part of a restart (joystick_end, then joystick_begin). A joystick_end that is not part of a
+    // restart is a release (R14).
     readonly record struct ActivationPost(string Ip, string Action, int IntervalUs, int Channels, bool Restart);
 
     // Core WiFi-joystick engine: receives the ELRS/Crossfire UDP stream, feeds vJoy, and
     // raises events for a UI. Runs its own background thread; events fire on that thread (and on the
-    // caller's for SetTarget, SetRequest and RestartStream, and on a POST's for its result), so subscribers
+    // caller's for SetTarget, SetRequest, RestartStream and Stop, and on a POST's for its result), so subscribers
     // must marshal to their UI thread.
     //
     // The rules of the request (the same in the Linux core, core/wifi_proto.h, and in every doc of the apps):
@@ -39,10 +40,10 @@ namespace ELRSWifiJoystick
     //     dropped when that module's ELRS beacon gets it a joystick_begin carrying the request, or when another
     //     module takes the lock.
     // R3  Not locked: the next joystick_begin carries the request. What each module was last asked is kept per
-    //     module (requestOf, TableSize); a module that locks with another asked request than the request is
-    //     restarted under R2's kind rules. A restart that did not take (R6, or cut short by Stop) leaves it
-    //     unknown (RequestUnknown): restarted at its next lock unless its ELRS beacon gets it a joystick_begin
-    //     carrying the request first.
+    //     module (requestOf, TableSize), and forgotten when a release of it took (R14); a module that locks with
+    //     another asked request than the request is restarted under R2's kind rules. A restart that did not take
+    //     (R6, or cut short by Stop) leaves it unknown (RequestFailed, RequestCut): restarted at its next lock
+    //     unless its ELRS beacon gets it a joystick_begin carrying the request first.
     // R4  Explicit restart (RestartStream): locked -> as R2 (Crossfire: logged, nothing sent). Not locked, the
     //     module IP set: known as ELRS -> restarted; unknown or Crossfire -> a plain joystick_begin past the
     //     throttle, never joystick_end. Neither -> logged, nothing sent.
@@ -61,8 +62,9 @@ namespace ELRSWifiJoystick
     //     module's joystick_begin carries the request, the module being left gets nothing. An engine API: the
     //     GUI and the CLI change the request (at once) and the module IP (Connect) one at a time.
     // R9  A stop/start or a port change (ResetSessionState) starts a new session: lock, throttles and restart
-    //     state cleared; the kinds from beacons and the asked requests kept. (The GUI and the CLI also clear the
-    //     module IP on Stop - documented; the engine keeps ActivationIP.)
+    //     state cleared; the kinds from beacons and the asked requests kept, except that a release that took
+    //     forgets its module's (R14). (The GUI and the CLI also clear the module IP on Stop - documented; the
+    //     engine keeps ActivationIP.)
     // R10 Tables are bounded (TableSize); the locked module's kind is never evicted.
     // R11 Lock loss, stop, exit and a switch to another module IP center the 8 axes and release the buttons;
     //     channels a frame does not carry are neutral; short gaps hold the last values (JoystickMap).
@@ -70,6 +72,31 @@ namespace ELRSWifiJoystick
     //     traffic arrives.
     // R13 One automatic plain activation POST (a beacon, the module IP's tries) per module per THROTTLE_SEC;
     //     SetTarget, RestartStream and restarts go past it, and a restart restarts it.
+    // R14 Release (Release, on Stop and so on exit): ELRS streams until it gets joystick_end, loses power or loses
+    //     its WiFi, and beacons only while idle, so a module left streaming to an app that stopped can't be found
+    //     by any other app. Stop and exit release: action=joystick_end alone goes to the locked module, then to
+    //     every module that streams to us while we drop its frames, then to every module activated less than
+    //     SOURCE_TIMEOUT_SEC ago that has not locked since (it may be about to stream to us). The ones known to
+    //     stream to us go first. "Streams to us while we drop its frames": a frame of it came less than
+    //     SOURCE_TIMEOUT_SEC ago, and it is a 2nd source, sends placeholder frames, or is not the module IP (e.g.
+    //     the module left by a switch). With a module IP set, other modules' beacons are not heard: one of unknown
+    //     kind that we neither activated nor had locked this session is left alone then, as it could be a
+    //     Crossfire we can't tell. Except one known as Crossfire by its beacon (it beacons while streaming, so
+    //     other apps find it anyway, and what joystick_end does to it is unknown): that one is logged, not sent.
+    //     A module of unknown kind gets it (an ELRS module streaming since before we started never beaconed to
+    //     us). The releases outlive the session that ends right after (neither Stop nor a quick Start drops or
+    //     cancels them); an exit (StopAndWait) waits for them at most RELEASE_WAIT_SEC after the last Stop that
+    //     handed releases over (as the Linux app counts), then cuts short what is left: in flight "no answer in
+    //     time", still waiting behind another POST to its module "not sent, the wait ran out before its turn" (the
+    //     Linux app's words). A release changes no lock, kind or throttle. One that took (a 2xx) forgets what its
+    //     module was last asked (R3): the module is idle then and streams what its next joystick_begin asks for,
+    //     so its next lock takes that, or the request then, and is not restarted for an old request (e.g. Stop,
+    //     another rate, then Connect to its IP). One that missed its joystick_end leaves it as it was: the module
+    //     streams on, as before. Stopped, the engine does not listen until the next Start. A port change is a
+    //     stop and a start, with its release: the modules send to port 11000 only, so on another port no frame of
+    //     theirs comes, and a later stop could not release them (the GUI and the CLI change the port only while
+    //     stopped, and the next Start binds it). Not on a switch to another module IP (R7: the module left gets
+    //     nothing then; a stop releases it if it still streams to us).
     class JoystickEngine
     {
         public int Port = 11000;
@@ -95,6 +122,9 @@ namespace ELRSWifiJoystick
         internal const double THROTTLE_SEC = 5.0;
         // Sends of a restart that fails (R6), per restart (a request change, an explicit one, a mismatch).
         internal const int RestartTries = 3;
+        // An exit waits at most this long for the joystick_end POSTs of its release (R14; the Linux core's
+        // WIFI_RELEASE_WAIT_US).
+        internal const double RELEASE_WAIT_SEC = 1.5;
         // What a Crossfire module puts in a channel it has no data for (62058).
         internal const int XF_PLACEHOLDER = 0xF26A;
         internal const string NoStickState = "module found, but it is sending no stick data";
@@ -137,10 +167,20 @@ namespace ELRSWifiJoystick
         private bool driving;                           // the joystick shows a module's frames (engine thread)
         private bool writeFailed;                       // a vJoy write failed, none got through since (engine thread)
         private volatile bool running;
-        // Set by Stop until the next Start: from then on nothing is POSTed, so a request changed after
-        // Stop (or a frame still in flight) can't start or restart a module. The lock itself stays
+        // Set by Stop until the next Start: from then on nothing is POSTed but the release (R14), so a request
+        // changed after Stop (or a frame still in flight) can't start or restart a module. The lock itself stays
         // until the loop exits - clearing it here would let that frame lock again for a moment.
         private volatile bool stopRequested;
+        private readonly object stopGate = new();       // the first Stop of a run releases (R14), once
+        // The release's joystick_end POSTs (R14), of no session: neither Stop nor a Start drops or cancels them;
+        // only an exit whose wait ran out (StopAndWait) cuts short what is left, with releaseCancel. Under
+        // postChains.
+        private readonly List<Task> releases = new();
+        private CancellationTokenSource releaseCancel = new();
+        // When Release last handed one over (Stopwatch ticks, 0: none yet), on the first Stop of a run: an exit waits
+        // for the releases at most RELEASE_WAIT_SEC after it, also when that Stop came long before (R14, as the Linux
+        // app counts).
+        private long releasedAt;
         // New on every Start and Stop: what an earlier session queued is not POSTed, and its answers count
         // for nothing (the Linux core's activation queue session). Stop also abandons the POSTs in flight.
         private int session;
@@ -149,15 +189,34 @@ namespace ELRSWifiJoystick
         private UdpClient? udp;
 
         private volatile string? boundSource;   // also cleared by the UI thread via SetTarget
+        // The last module locked this session (kept when its lock goes, like the Linux core's bound_ip) and its last
+        // applied frame: a module "has locked since its activation" when it is this one and that frame came at or
+        // after the activation, or its activation entry says Locked (R14).
+        private volatile string? lastBound;
         private DateTime boundSourceLastData;
         private readonly HashSet<string> noStickData = new();
         private DateTime noStickLast;                   // the last placeholder frame while not locked (engine thread)
         private volatile EngineState state = EngineState.Stopped;     // the last one said (SetState)
         private volatile bool noStickShown;             // ... and it is Searching NoStickState
         private readonly HashSet<string> warned = new();
-        // The last activation POST per module (the throttle, R13) and the request it carried (R3).
+        // The last activation POST per module (the throttle, R13) and the request it carried (R3). Unthrottled: its
+        // throttle does not apply (the module IP set: the entry stays for R14, which has to know that one went out).
+        // Locked: a frame of it was applied after it, noted when another module takes the lock (for the last locked
+        // module, lastBound and boundSourceLastData tell; R14). Also under its lock: the dropped and held tables.
         private readonly IpTable<Activation> lastActivation = new();
-        private readonly record struct Activation(DateTime At, int IntervalUs, int Channels);
+        private readonly record struct Activation(DateTime At, int IntervalUs, int Channels, bool Unthrottled = false,
+                                                  bool Locked = false);
+        // The modules that stream to us while we drop their frames (R14): a 2nd source, placeholder frames, with a
+        // module IP set another module that we activated or had locked this session, or whose kind a beacon told;
+        // the module left by a switch to another module IP from its last frame on. When their last frame came
+        // (applied or dropped), and Seq: when the entry was written (frames of one burst share a time). Kept through
+        // lock changes, cleared by ResetSessionState; full, the one heard longest ago goes. Under lastActivation.
+        private readonly Dictionary<string, (DateTime At, long Seq)> dropped = new();
+        private long droppedSeq;
+        // The modules that took the lock this session, the one locked last at the end (R14: with a module IP set, one
+        // left by a switch that streams on is released). Cleared by ResetSessionState; full, the one locked longest
+        // ago goes. Under lastActivation.
+        private readonly List<string> held = new();
         // Set from an activation task thread, read/cleared on the engine thread. The lock is taken (and said)
         // under it too, so an answer racing the first frame can't arm the "no data" hint after the lock, and
         // SetTarget drops a lock under it.
@@ -171,19 +230,23 @@ namespace ELRSWifiJoystick
         private volatile int intervalUs = StreamRequest.IntervalDefault;
         private volatile int channels = StreamRequest.ChannelsDefault;
         // The kind of each module from its beacons. Kept across sessions (R9): a module keeps its kind while it
-        // keeps its IP, and an ELRS module streams on after Stop and never beacons while it streams. The kind
-        // decides whether a joystick_end may be sent, so the locked module's is never evicted (R10).
+        // keeps its IP, and an ELRS module that missed its release (R14) streams on after Stop and never beacons
+        // while it streams. The kind decides whether a joystick_end may be sent, so the locked module's is never
+        // evicted (R10).
         private readonly IpTable<ModuleKind> kinds = new();
         private readonly HashSet<string> restarted = new();     // restarted this session: a mismatch restarts once
         // What each module was last asked for (R3), as far as this app knows: the request of a restart sent to it
         // or of an activation after its ELRS beacon (it was not streaming then), else, from its lock on, that of
         // the last activation sent to it this session, or the request when it locked (found streaming). Kept
-        // across sessions - a module keeps streaming after Stop - so a change made while it was not locked
-        // (WiFi dropout, Stop, its activation in flight) reaches it as a restart when it locks again.
-        // RequestUnknown: a restart of it did not take (it failed, R6, or Stop cut it short) - it may still stream
-        // its old request, so its next lock restarts it (CheckRequest).
+        // across sessions - a module that missed its release (R14) keeps streaming after Stop - so a change made
+        // while it was not locked (WiFi dropout, Stop, its activation in flight) reaches it as a restart when it
+        // locks again. Forgotten when a release of it took (SendRelease): idle, it streams what its next
+        // joystick_begin asks for.
+        // RequestFailed, RequestCut: a restart of it did not take (it failed, R6, or Stop cut it short) - it may still
+        // stream its old request, so its next lock restarts it (CheckRequest, which says which of the two, as the
+        // core's WIFI_ASKED_FAILED and WIFI_ASKED_CUT do).
         private readonly IpTable<(int IntervalUs, int Channels)> requestOf = new();
-        private static readonly (int IntervalUs, int Channels) RequestUnknown = (0, 0);
+        private static readonly (int IntervalUs, int Channels) RequestCut = (0, 0), RequestFailed = (0, 1);
         private bool xfNoted;                                    // "Crossfire ignores the request" logged
         private volatile bool restartWait;                       // a request restart waiting to know it is no Crossfire
         private string? restartWaitIp;                           // ... of this module (held through its lock loss)
@@ -275,28 +338,168 @@ namespace ELRSWifiJoystick
             // Wait for any previous run to fully exit so its UDP socket is released before
             // we bind again (otherwise a quick Stop->Start races on the port).
             thread?.Join(1500);
+            // The new session starts here (R9), before Start returns and before anything can be activated: a Stop
+            // right after it releases only what this session saw (R14; the core resets at the stop, after its
+            // release), not the modules of the last one again.
+            ResetSessionState();
             Interlocked.Increment(ref session);
             postCancel = new CancellationTokenSource();
-            stopRequested = false;
+            lock (stopGate) stopRequested = false;
             running = true;
             thread = new Thread(Run) { IsBackground = true, Name = "joystick-engine" };
             thread.Start();
         }
 
-        // stopRequested first, so a Start that sees running == false always comes after it.
+        // stopRequested first, so a Start that sees running == false always comes after it. The first Stop of a
+        // run releases what streams to us (R14), after the session's POSTs were dropped and cancelled: each
+        // joystick_end follows what went to its module before, so an earlier joystick_begin can't overtake it.
         public void Stop()
         {
-            stopRequested = true;
+            bool first;
+            lock (stopGate)
+            {
+                first = !stopRequested;
+                stopRequested = true;
+            }
             Interlocked.Increment(ref session);
             try { postCancel.Cancel(); } catch { /* a POST's cancel callback: the POST is abandoned anyway */ }
-            running = false;
+            try
+            {
+                if (first) Release();
+            }
+            finally
+            {
+                running = false;
+            }
         }
 
-        // Stop and wait for the worker to finish (so vJoy is released cleanly) - used on exit.
+        // Stop and wait for the worker to finish (so vJoy is released cleanly), and for the release's joystick_end
+        // POSTs at most RELEASE_WAIT_SEC after the Stop that handed them over (R14): this one's, or an earlier one's,
+        // so closing 1 s after a Stop waits at most 0.5 s more. What is left then is cut short. Used on exit.
         public void StopAndWait(int ms)
         {
             Stop();
             try { thread?.Join(ms); } catch { }
+            long at = Interlocked.Read(ref releasedAt);
+            double since = at == 0 ? RELEASE_WAIT_SEC : (Stopwatch.GetTimestamp() - at) / (double)Stopwatch.Frequency;
+            double left = RELEASE_WAIT_SEC - since;
+            WaitForReleases(left > 0 ? TimeSpan.FromSeconds(left) : TimeSpan.Zero, abort: true);
+        }
+
+        // R14 (wifi_proto_release): release what streams to us, right before the engine stops listening (Stop,
+        // and so exit). action=joystick_end alone to the locked module; then to every module whose frames we drop
+        // and of which one came less than SOURCE_TIMEOUT_SEC ago, the one heard longest ago first (dropped: a 2nd
+        // source, placeholder frames, with a module IP set another module that we activated or had locked this
+        // session, or whose kind a beacon told; the module left by a switch counts from its last frame, applied or
+        // not); then to every module activated less than SOURCE_TIMEOUT_SEC ago that has not locked since, in the
+        // order they were activated (lastActivation). Each once, except one known as Crossfire by its beacon (logged,
+        // not sent). The POSTs go out off this thread, of no session (PostRelease); their results are logged, and one
+        // that took forgets what its module was asked (SendRelease). Changes no lock, kind, table or throttle.
+        // Returns how many were handed over. Called by Stop; any thread.
+        internal int Release()
+        {
+            DateTime now = Clock();
+            var ips = new List<string>();
+            // The lock, the last locked module, its data time and the tables, read in one step under the gate a lock
+            // is taken (and SetTarget lets one go) under. Read one by one while the engine thread locks a module, that
+            // module could count neither as locked nor as locked since, and get nothing; and a module SetTarget lets go
+            // of is in the dropped table by the time its lock is gone. (The core reads them on its own thread.)
+            lock (activationGate)
+            {
+                string? bound = boundSource, last = lastBound;
+                DateTime lastData = boundSourceLastData;
+                // The modules known to stream to us first, so that one that may not be there can't hold them up. The
+                // locked module,
+                if (bound != null) ips.Add(bound);
+                lock (lastActivation)
+                {
+                    // then each module that streams to us while we drop its frames (one came less than
+                    // SOURCE_TIMEOUT_SEC ago), the one heard longest ago first: a 2nd source, placeholder frames, the
+                    // module left by a switch (from its last frame on, applied or not: SetTarget)
+                    foreach (var d in dropped.Where(kv => (now - kv.Value.At).TotalSeconds < SOURCE_TIMEOUT_SEC)
+                                             .OrderBy(kv => kv.Value.At).ThenBy(kv => kv.Value.Seq))
+                        if (!ips.Contains(d.Key)) ips.Add(d.Key);
+                    // then each module activated less than SOURCE_TIMEOUT_SEC ago that has not locked since (it may be
+                    // about to stream to us), in the order they were activated. "Locked since": a frame of it was
+                    // applied after its activation. The last locked module tells by lastBound and its data time, one
+                    // that had the lock before it by its entry's Locked (ActNoteLocked): within that time only a switch
+                    // to another module IP takes a lock away, and the module left gets nothing by this rule (R7), also
+                    // when the new one has locked since. (The rule above releases it while its last frame is that
+                    // recent: the switch put it in the dropped table.)
+                    foreach (var (ip, a) in lastActivation.Oldest())
+                    {
+                        if (ips.Contains(ip) || (now - a.At).TotalSeconds >= SOURCE_TIMEOUT_SEC) continue;
+                        if (a.Locked || (ip == last && lastData >= a.At)) continue;
+                        ips.Add(ip);
+                    }
+                }
+            }
+            int n = 0;
+            foreach (string ip in ips)
+            {
+                if (KindOf(ip) == ModuleKind.Crossfire)
+                {
+                    Log?.Invoke($"Not releasing {ip}: Crossfire broadcasts while streaming, other apps find it as it is");
+                    continue;
+                }
+                Log?.Invoke($"Releasing {ip}: joystick_end, so it stops streaming and broadcasts again");
+                PostRelease(ip);
+                n++;
+            }
+            if (n > 0) Interlocked.Exchange(ref releasedAt, Stopwatch.GetTimestamp());   // the exit's wait counts from here
+            return n;
+        }
+
+        // Releases handed over whose POST is not done yet (the Linux core's wifi_actq_releases).
+        internal int ReleasesPending
+        {
+            get
+            {
+                lock (postChains)
+                {
+                    releases.RemoveAll(t => t.IsCompleted);
+                    return releases.Count;
+                }
+            }
+        }
+
+        // Test hook: the releases kept in the list, done or not (ReleasesPending drops the done ones first).
+        internal int ReleasesHeldForTest
+        {
+            get { lock (postChains) return releases.Count; }
+        }
+
+        // Test hooks (R14, as the core's tests look at its tables): the modules whose frames we drop, and whether ip's
+        // activation entry says a frame of it was applied after it (noted when another module took the lock).
+        internal int DroppedForTest
+        {
+            get { lock (lastActivation) return dropped.Count; }
+        }
+
+        internal bool LockedSinceForTest(string ip)
+        {
+            lock (lastActivation) return lastActivation.TryGetValue(ip, out var a) && a.Locked;
+        }
+
+        // Waits until the release's POSTs are done, at most max (R14). abort (an exit): what is left then is cut
+        // short (its result: NoAnswerText(true) in flight, NotSentText not sent yet). True when none is left.
+        internal bool WaitForReleases(TimeSpan max, bool abort = false)
+        {
+            Task[] left;
+            CancellationTokenSource rc;
+            lock (postChains)
+            {
+                releases.RemoveAll(t => t.IsCompleted);
+                left = releases.ToArray();
+                rc = releaseCancel;
+            }
+            if (left.Length == 0) return true;
+            bool done;
+            try { done = Task.WaitAll(left, max); }
+            catch (AggregateException) { done = true; }
+            if (!done && abort)
+                try { rc.Cancel(); } catch { /* a POST's cancel callback: it is abandoned anyway */ }
+            return done;
         }
 
         // Set/replace the module IP to activate, live (Connect). Blank: discovery by beacon. Not an IPv4
@@ -305,7 +508,9 @@ namespace ELRSWifiJoystick
         // and a joystick_begin would not change its stream - nothing is sent, logged (R7). Else the lock goes -
         // the engine thread centers the joystick on its next tick - the state says Searching "connecting to
         // <ip>", and the activation POST goes out at once (off this thread), past the throttle. A restart to send
-        // again or held for another module is dropped: that module is being left (wifi_proto_set_target).
+        // again or held for another module is dropped: that module is being left (wifi_proto_set_target). The
+        // module left gets nothing (R7); for R14 it streams to us while we drop its frames, from its last frame on
+        // (a Stop before its next frame releases it too).
         public bool SetTarget(string? text) => SetTarget(text, null);
 
         // The module IP and the request changed together, in one step (R8; the Linux app's settings change):
@@ -331,7 +536,9 @@ namespace ELRSWifiJoystick
                 return true;
             }
             bool live = !stopRequested;
-            lock (lastActivation) lastActivation.Remove(ip);        // allow immediate (re)activation
+            // allow an immediate (re)activation; the entry stays: R14 still has to know that one went out
+            lock (lastActivation)
+                if (lastActivation.TryGetValue(ip, out var had)) lastActivation.Update(ip, had with { Unthrottled = true });
             bool streaming;
             RestartPlan? plan = null;
             // Under the gate a lock is taken and said under: a lock of the module being left that is being taken
@@ -343,6 +550,12 @@ namespace ELRSWifiJoystick
                             (Clock() - boundSourceLastData).TotalSeconds <= SOURCE_TIMEOUT_SEC;
                 if (live && !streaming) SetState(EngineState.Searching, $"connecting to {ip}");
                 ActivationIP = ip;
+                // The module left gets nothing now (R7) and streams on to us: its frames are dropped from here on, so
+                // for R14 it is one that streams to us while we drop its frames, from its last frame on. A Stop before
+                // its next frame comes, or after the new module IP locked, releases it too.
+                string? left = streaming ? null : boundSource;
+                if (left != null && left != ip)
+                    lock (lastActivation) DroppedPut(left, boundSourceLastData);
                 // The request and the lock drop in one step under requestGate: a frame of the module being left
                 // (past the module IP check already) is checked (CheckRequest) either before both - the old
                 // request - or after both, unlocked: never restarted for the new request.
@@ -539,8 +752,8 @@ namespace ELRSWifiJoystick
         // restarted. Through a lock loss of its module it is held until that module locks again (a module that
         // streams on through a WiFi pause keeps the old request until it is restarted; its window starts again
         // with the lock). Dropped elsewhere when another module locks or is set as the module IP, when its ELRS
-        // beacon gets it a joystick_begin carrying the request (EnsureStreaming), on Stop and reset. Called from
-        // Tick and from every applied frame.
+        // beacon gets it a joystick_begin carrying the request (EnsureStreaming), on Stop and reset. Decided on
+        // Tick only, as the core does (R12: it runs at least every 100 ms whatever arrives).
         private void ResolveRestartWait()
         {
             if (!restartWait) return;
@@ -598,16 +811,16 @@ namespace ELRSWifiJoystick
             SendRestart(ip, iv, ch, fresh: false);
         }
 
-        // A module still streaming another request than the one asked for keeps it until it is restarted:
-        // another app's (seen as a channel count other than asked, R5), or this app's from before a change made
-        // while it was not locked (requestOf, R3). Only where it surely is no Crossfire, which ignores the
-        // request: ELRS by its beacon, a channel count Crossfire never sends, or XF_BEACON_SEC of lock without a
-        // Crossfire beacon (until then the restart waits, see PlanRestartLocked); a Crossfire with an old request
-        // is only noted. A channel mismatch once per module and session (never when that table is full), so a
-        // module that doesn't do what is asked is never restarted per frame; an old request once per change, and
-        // one a restart of it did not take (RequestUnknown) once per lock. Not while a restart of it is held or to
-        // be sent again, nor after its restart gave up while that lock lasts, nor for a frame of a module SetTarget
-        // let go of meanwhile. The frames are applied all the same.
+        // A module still streaming another request than the one asked for keeps it until it is restarted: another
+        // app's (seen as a channel count other than asked, R5), or this app's from before a change made while it was
+        // not locked (requestOf, R3). Only where it surely is no Crossfire, which ignores the request: ELRS by its
+        // beacon, a channel count Crossfire never sends, or XF_BEACON_SEC of lock without a Crossfire beacon (until
+        // then the restart waits, see PlanRestartLocked); a Crossfire with an old request is only noted. A channel
+        // mismatch once per module and session (never when that table is full), so a module that doesn't do what is
+        // asked is never restarted per frame; an old request once per change, and one a restart of it did not take
+        // (RequestFailed, RequestCut) once per lock. Not while a restart of it is held or to be sent again, nor after
+        // its restart gave up while that lock lasts, nor for a frame of a module SetTarget let go of meanwhile. The
+        // frames are applied all the same.
         private void CheckRequest(string src, int count)
         {
             if (stopRequested || restartWait) return;
@@ -631,8 +844,10 @@ namespace ELRSWifiJoystick
                     string asked = $"{StreamRequest.Describe(intervalUs)}, {channels} channels";
                     why = mismatch
                         ? $"{src} streams {count} channels, {channels} asked for (another app's request?) - restarting its stream"
-                        : had == RequestUnknown
-                        ? $"{src} may still stream its old request (its last restart did not take) - restarting its stream with {asked}"
+                        : had.IntervalUs == 0
+                        ? $"{src} may still stream its old request " +
+                          $"({(had == RequestCut ? "Stop cut its restart short" : "its restart failed")}) - " +
+                          $"restarting its stream with {asked}"
                         : $"{src} still streams {StreamRequest.Describe(had.IntervalUs)}, {had.Channels} channels from " +
                           $"before the change - restarting its stream with {asked}";
                     plan = PlanRestartLocked(src, src);
@@ -651,19 +866,27 @@ namespace ELRSWifiJoystick
 
         // Fresh session state (R9) - a previous run's source lock must not leak into the next
         // one, or the "locked -> Streaming" transition never fires again after a restart. The lock, the
-        // throttles and the restart state go; what is known about modules stays: their kind from beacons and
-        // what each was asked for (requestOf) - a module streams on after Stop, and an ELRS module that
-        // streams sends no beacon.
+        // throttles, the restart state and what R14 knows of this session (the modules whose frames we drop, the
+        // ones that took the lock) go; what is known about modules stays: their kind from beacons and
+        // what each was asked for (requestOf) - a module that missed its release streams on after Stop, and an
+        // ELRS module that streams sends no beacon. (A release that took forgets what its module was asked:
+        // SendRelease, R14.)
         internal void ResetSessionState()
         {
             boundSource = null;
+            lastBound = null;
             warned.Clear();
             noStickData.Clear();
             lock (activationGate) firstActivationTime = null;
             firewallHintShown = false;
             arrivalTicks.Clear();
             frameCount = 0;
-            lock (lastActivation) lastActivation.Clear();
+            lock (lastActivation)
+            {
+                lastActivation.Clear();
+                dropped.Clear();
+                held.Clear();
+            }
             lock (requestGate)
             {
                 restarted.Clear();
@@ -683,8 +906,6 @@ namespace ELRSWifiJoystick
 
         private void Run()
         {
-            ResetSessionState();
-
             if (!SkipVJoyForTest)
             {
                 joystick = new vJoy();
@@ -842,7 +1063,7 @@ namespace ELRSWifiJoystick
             Cleanup();
             boundSource = null;
             SetState(EngineState.Stopped, "");
-            Log?.Invoke("Stopped. (The module keeps broadcasting until powered off.)");
+            Log?.Invoke("Stopped.");
         }
 
         // The joystick is left centered with the buttons released, then the device is let go. Not with
@@ -954,8 +1175,13 @@ namespace ELRSWifiJoystick
 
             string src = remote.Address.ToString();
             // If a specific module was chosen (Module IP / Connect), accept ONLY that one, so a
-            // different module that's still broadcasting can't steal or hold the lock.
-            if (ActivationIP != null && src != ActivationIP) return;
+            // different module that's still broadcasting can't steal or hold the lock. (R14: e.g. the module left
+            // by a switch, which streams on to us.)
+            if (ActivationIP != null && src != ActivationIP)
+            {
+                DroppedNote(src);
+                return;
+            }
 
             int[] ch = new int[count];
             int outOfRange = 0;
@@ -981,6 +1207,7 @@ namespace ELRSWifiJoystick
                 // A placeholder flood can't hold the lock: release a stale one at once (the loop ticks
                 // every 100 ms anyway).
                 Tick();
+                if (boundSource != src) DroppedNote(src);       // (R14: the locked module is released anyway)
                 if (boundSource == null) WarnNoStickData(src);
                 return;
             }
@@ -992,6 +1219,7 @@ namespace ELRSWifiJoystick
                 else
                 {
                     if (AddCapped(warned, src)) Log?.Invoke($"Ignoring 2nd source {src} (locked to {boundSource})");
+                    DroppedNote(src);
                     return;
                 }
             }
@@ -1002,10 +1230,21 @@ namespace ELRSWifiJoystick
                 {
                     // SetTarget may have changed the module IP since the check above (under this gate, with the
                     // lock it drops): never lock the module being left.
-                    if (ActivationIP != null && src != ActivationIP) return;
+                    if (ActivationIP != null && src != ActivationIP)
+                    {
+                        DroppedNote(src);
+                        return;
+                    }
                     bool sent;
                     Activation act;
-                    lock (lastActivation) sent = lastActivation.TryGetValue(src, out act);
+                    lock (lastActivation)
+                    {
+                        sent = lastActivation.TryGetValue(src, out act);
+                        // R14: the module that had the lock before keeps, in its activation entry, whether a frame of
+                        // it was applied after that activation, which lastBound and its data time no longer tell
+                        if (lastBound != null && lastBound != src) ActNoteLocked(lastBound, boundSourceLastData);
+                        HeldNote(src);
+                    }
                     lock (requestGate)
                     {
                         boundSince = now;
@@ -1013,7 +1252,7 @@ namespace ELRSWifiJoystick
                         // this module goes on (R2): its window starts again with this lock
                         if (restartWaitIp != src) restartWait = false;
                         if (retryIp != src) retryIp = null;
-                        // a new lock: a module whose restart gave up is restarted again, once (R3, RequestUnknown)
+                        // a new lock: a module whose restart gave up is restarted again, once (R3, RequestFailed)
                         gaveUpIp = null;
                         // R3: not known what it streams - what the last activation sent to it this session asked
                         // for (it was not streaming then, or it streams what it streamed before, which nothing can
@@ -1026,6 +1265,7 @@ namespace ELRSWifiJoystick
                         boundSource = src;
                     }
                     boundSourceLastData = now;
+                    lastBound = src;                // with the lock, under the gate: Release reads the three in one step
                     firstActivationTime = null;
                     warned.Clear();
                     noStickData.Clear();
@@ -1046,7 +1286,6 @@ namespace ELRSWifiJoystick
             arrivalTicks.Add(Stopwatch.GetTimestamp());
 
             CheckRequest(src, count);
-            ResolveRestartWait();
         }
 
         // Warn once per source, not ~90x/sec. The usual cause is a known TBS firmware
@@ -1137,10 +1376,76 @@ namespace ELRSWifiJoystick
         private static bool AddCapped(HashSet<string> set, string ip) =>
             !set.Contains(ip) && set.Count < TableSize && set.Add(ip);
 
-        // An activation POST to ip, unless one went out less than THROTTLE_SEC ago (the throttle, R13) or
-        // TableSize modules wait for an answer already (then the next beacon or tick tries again). why: logged
-        // when it goes out. idle: the module is known not to stream (its ELRS beacon), so it will stream what this
-        // asks for (R3), and a restart held, in flight or to be sent again for it has nothing left to do (R2, R6).
+        // src streams to us and we drop its frame (a 2nd source, a placeholder frame, not the module IP): when, for
+        // R14. With a module IP set, other modules' beacons are not heard: one of unknown kind that we neither
+        // activated nor had locked this session is left out then, as it could be a Crossfire we can't tell. (One we
+        // had locked: while it had the lock, a Stop would have sent it joystick_end anyway.) Engine thread.
+        private void DroppedNote(string src)
+        {
+            DateTime now = Clock();
+            string? target = ActivationIP;
+            bool unknownOther = target != null && src != target && KindOf(src) == ModuleKind.Unknown;
+            lock (lastActivation)
+            {
+                if (unknownOther && !lastActivation.TryGetValue(src, out _) && !held.Contains(src)) return;
+                DroppedPut(src, now);
+            }
+        }
+
+        // ip streams to us and we drop its frames; its last frame came at t (R14). Never back in time. Full: the one
+        // heard longest ago goes. Under lastActivation.
+        private void DroppedPut(string ip, DateTime t)
+        {
+            if (dropped.TryGetValue(ip, out var e))
+            {
+                if (e.At > t) return;
+            }
+            else if (dropped.Count >= TableSize)
+            {
+                string? oldest = null;
+                (DateTime At, long Seq) min = default;
+                foreach (var kv in dropped)
+                    if (oldest == null || HeardBefore(kv.Value, min))
+                    {
+                        oldest = kv.Key;
+                        min = kv.Value;
+                    }
+                dropped.Remove(oldest!);
+            }
+            dropped[ip] = (t, ++droppedSeq);
+        }
+
+        // a was heard before b: by the time of its last frame, then by when it was written (frames of one burst share
+        // a time)
+        private static bool HeardBefore((DateTime At, long Seq) a, (DateTime At, long Seq) b) =>
+            a.At < b.At || (a.At == b.At && a.Seq < b.Seq);
+
+        // Another module takes the lock: ip, the one that had it last, keeps in its activation entry whether a frame
+        // of it was applied after that activation (lastData: its last applied frame), which lastBound and its data
+        // time no longer tell then (R14). The entry keeps its place. Under lastActivation.
+        private void ActNoteLocked(string ip, DateTime lastData)
+        {
+            if (lastActivation.TryGetValue(ip, out var a) && lastData >= a.At)
+                lastActivation.Update(ip, a with { Locked = true });
+        }
+
+        // ip takes the lock: noted for this session (R14), the one locked last at the end. Full: the one locked
+        // longest ago goes. Under lastActivation.
+        private void HeldNote(string ip)
+        {
+            if (!held.Remove(ip) && held.Count >= TableSize) held.RemoveAt(0);
+            held.Add(ip);
+        }
+
+        // An activation POST to ip, unless one went out less than THROTTLE_SEC ago (the throttle, R13; not after
+        // SetTarget lifted it) or TableSize modules wait for an answer already (then the next beacon or tick tries
+        // again: the entry stays as it was). why: logged when it goes out. idle: the module is known not to stream
+        // (its ELRS beacon), so it will stream what this asks for (R3), and a restart held, in flight or to be sent
+        // again for it has nothing left to do (R2, R6). One to a module whose POST is still in flight queues behind
+        // it, and its request is recorded; the core's hook answers BUSY there (nothing goes out, the entry keeps the
+        // request in flight). So when the module IP is set again with another request while its first joystick_begin
+        // is in flight (R8), a module that locks streaming the first request is restarted by the core (R3), not here
+        // (the core's "What differs" note).
         private void EnsureStreaming(string ip, string? why = null, bool idle = false)
         {
             if (stopRequested) return;
@@ -1153,7 +1458,7 @@ namespace ELRSWifiJoystick
             }
             lock (lastActivation)
             {
-                if (lastActivation.TryGetValue(ip, out var t) && (now - t.At).TotalSeconds < THROTTLE_SEC)
+                if (lastActivation.TryGetValue(ip, out var t) && !t.Unthrottled && (now - t.At).TotalSeconds < THROTTLE_SEC)
                     return;
                 if (!PostSlotFree(ip)) return;
                 lastActivation.Set(ip, new Activation(now, iv, ch));
@@ -1250,11 +1555,12 @@ namespace ELRSWifiJoystick
             else if (restart) RestartFailed(ip, seq, s);
         }
 
-        // Test hook: waits until every POST queued so far went out (AsyncPostsForTest).
-        internal bool WaitForPostsForTest(int ms)
+        // Test hook: waits until every POST queued so far (to ip, when given) went out (AsyncPostsForTest).
+        internal bool WaitForPostsForTest(int ms, string? ip = null)
         {
             Task[] chains;
-            lock (postChains) chains = postChains.Values.ToArray();
+            lock (postChains)
+                chains = postChains.Where(kv => ip == null || kv.Key == ip).Select(kv => kv.Value).ToArray();
             return Task.WaitAll(chains, ms);
         }
 
@@ -1280,7 +1586,7 @@ namespace ELRSWifiJoystick
         }
 
         // A restart that failed (R6): the module kept what it streamed, as far as anyone knows, so what it was asked
-        // is unknown from now on (RequestUnknown, R3). Still streaming to us, it is sent again THROTTLE_SEC after the
+        // is unknown from now on (RequestFailed, R3). Still streaming to us, it is sent again THROTTLE_SEC after the
         // last send (RetryRestart, on Tick) while that module stays locked and is not known as Crossfire,
         // RestartTries sends in all; then giving up is logged, and it is left alone while that lock lasts. Once it
         // is not sent again (given up, the lock lost, a new session, another module IP), its next lock restarts it
@@ -1294,7 +1600,7 @@ namespace ELRSWifiJoystick
             {
                 if (Stale(s) || seq != restartSeq) return;
                 if (KindLocked(ip) == ModuleKind.Crossfire) return;
-                requestOf.Set(ip, RequestUnknown, boundSource, ActivationIP);
+                requestOf.Set(ip, RequestFailed, boundSource, ActivationIP);
                 if (boundSource != ip) return;
                 if (restartTries >= RestartTries)
                 {
@@ -1317,11 +1623,11 @@ namespace ELRSWifiJoystick
         }
 
         // What ip streams is not known, but likely not the request: its next lock restarts it (CheckRequest).
-        // Only at a session's end, so never a restart per frame.
+        // Only at a session's end, so never a restart per frame. Stop cut the restart short (RequestCut).
         private void RestartAbandoned(string ip, int iv, int ch)
         {
             lock (requestGate)
-                if (requestOf.TryGetValue(ip, out var r) && r == (iv, ch)) requestOf.Set(ip, RequestUnknown);
+                if (requestOf.TryGetValue(ip, out var r) && r == (iv, ch)) requestOf.Set(ip, RequestCut);
         }
 
         private bool SendPost(ActivationPost p, CancellationToken token)
@@ -1378,6 +1684,101 @@ namespace ELRSWifiJoystick
             }
         }
 
+        // A release's joystick_end (R14): after what went to that module before, on its POST chain (an earlier
+        // joystick_begin must not overtake it; Stop dropped or cancelled those of its session, so it follows them
+        // at once), but of no session: Stop and Start neither drop nor cancel it. Only an exit cuts it short
+        // (WaitForReleases). The test seam stays synchronous.
+        private void PostRelease(string ip)
+        {
+            var post = new ActivationPost(ip, ActionEnd, 0, 0, false);
+            if (ActivateOverride != null && !AsyncPostsForTest)
+            {
+                SendRelease(post, CancellationToken.None);
+                return;
+            }
+            lock (postChains)
+            {
+                PruneChains();
+                if (releaseCancel.IsCancellationRequested) releaseCancel = new CancellationTokenSource();
+                CancellationToken token = releaseCancel.Token;
+                postChains.TryGetValue(ip, out var prev);
+                var t = (prev ?? Task.CompletedTask).ContinueWith(_ => SendRelease(post, token),
+                    CancellationToken.None, TaskContinuationOptions.None, TaskScheduler.Default);
+                postChains[ip] = t;
+                releases.RemoveAll(r => r.IsCompleted);     // what Stop after Stop left: the list stays short
+                releases.Add(t);
+            }
+        }
+
+        // Sends a release and logs its result (wifi_proto_release_done). One that took forgets what its module was
+        // last asked (R3, R14): it is idle after its joystick_end, so its next lock takes the request of the last
+        // activation sent to it this session, or the request then, as for a module never asked. The POSTs to a
+        // module go out in turn (postChains), so all that went to it after the Stop goes after this joystick_end.
+        // Nothing else: a release changes no lock, kind or throttle. One whose turn comes after an exit's wait ran
+        // out is not sent.
+        private void SendRelease(ActivationPost p, CancellationToken token)
+        {
+            if (token.IsCancellationRequested)
+            {
+                Log?.Invoke(ReleaseFailedText(p.Ip, 0, NotSentText));
+                return;
+            }
+            int status = 0;
+            string err = "";
+            bool ok;
+            var hook = ActivateOverride;
+            try { ok = hook != null ? hook(p) : HttpRelease(p, token, out status, out err); }
+            catch (Exception ex)
+            {
+                ok = false;
+                err = ex.Message;
+            }
+            if (ok)
+                lock (requestGate) requestOf.Remove(p.Ip);
+            Log?.Invoke(ok ? $"Released {p.Ip}: it broadcasts again, any app can connect to it"
+                           : ReleaseFailedText(p.Ip, status, err));
+        }
+
+        // why: "HTTP <status>" when there was one, else the error, else "no answer".
+        internal static string ReleaseFailedText(string ip, int status, string? err)
+        {
+            string why = status > 0 ? $"HTTP {status}" : !string.IsNullOrEmpty(err) ? err : "no answer";
+            return $"Releasing {ip} failed: {why} - it may stream on until its WiFi or power is cycled";
+        }
+
+        // Why a release got no answer when its POST was cancelled, in the words of the Linux app and StickTime Pi: an
+        // exit's wait ran out and cut it short (WaitForReleases), or the HTTP timeout ran out (the core's wifi_net).
+        internal static string NoAnswerText(bool aborted) =>
+            aborted ? "no answer in time" : $"timed out after {(int)Math.Ceiling(Http.Timeout.TotalSeconds)} s";
+
+        // Why a release was not sent: an exit's wait ran out while it waited behind another POST to its module.
+        internal const string NotSentText = "not sent, the wait ran out before its turn";
+
+        // POST action=joystick_end for a release, with no log of its own (SendRelease says how it went). status: the
+        // HTTP status, 0 when there was none; err: why there was none.
+        private static bool HttpRelease(ActivationPost p, CancellationToken token, out int status, out string err)
+        {
+            status = 0;
+            err = "";
+            try
+            {
+                using var form = new FormUrlEncodedContent(FormFields(p));
+                using var resp = Http.PostAsync($"http://{p.Ip}/udpcontrol", form, token).GetAwaiter().GetResult();
+                status = (int)resp.StatusCode;
+                return resp.IsSuccessStatusCode;
+            }
+            catch (OperationCanceledException)
+            {
+                err = NoAnswerText(token.IsCancellationRequested);
+                return false;
+            }
+            catch (Exception ex)
+            {
+                err = ex.Message.Trim().TrimEnd('.');       // one clause in the log line: "... failed: <err> - it may ..."
+                return false;
+            }
+        }
+
         // A per-module table of at most TableSize entries. Full: the entry set longest ago goes, except those
         // of the locked module and the module IP (their kind decides whether a joystick_end may be sent).
         // Callers lock.
@@ -1395,6 +1796,10 @@ namespace ELRSWifiJoystick
                 return ok;
             }
 
+            // The entries, the one set longest ago first.
+            public List<(string Ip, T Value)> Oldest() =>
+                d.OrderBy(kv => kv.Value.Seq).Select(kv => (kv.Key, kv.Value.Value)).ToList();
+
             public void Set(string ip, T value, string? keep1 = null, string? keep2 = null)
             {
                 if (d.Count >= TableSize && !d.ContainsKey(ip))
@@ -1410,6 +1815,14 @@ namespace ELRSWifiJoystick
                     if (oldest != null) d.Remove(oldest);
                 }
                 d[ip] = (value, ++seq);
+            }
+
+            // A new value for an entry that is there, in its place (its seq kept): false when there is none.
+            public bool Update(string ip, T value)
+            {
+                if (!d.TryGetValue(ip, out var e)) return false;
+                d[ip] = (value, e.Seq);
+                return true;
             }
 
             public bool Remove(string ip) => d.Remove(ip);

@@ -53,6 +53,14 @@ namespace ELRSWifiJoystick
             };
         }
 
+        // The Windows session ends (App.OnSessionEnding): Closing is not raised, so stop and release the module here
+        // (R14). Closing, if it still comes, finds it done (a second Stop releases nothing).
+        internal void EndSession()
+        {
+            barTimer.Stop();
+            vm.Shutdown();
+        }
+
         private void UpdateTimerState()
         {
             bool shouldRun = vm.IsStreaming && IsVisible && WindowState != WindowState.Minimized;
