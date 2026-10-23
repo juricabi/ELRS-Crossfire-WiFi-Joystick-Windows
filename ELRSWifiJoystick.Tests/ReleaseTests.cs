@@ -1176,20 +1176,30 @@ public class ReleaseTests
     [Fact]
     public void Exit_WaitsForTheRelease_AtMost1_5s()
     {
-        // The module does not answer: the exit (StopAndWait) gives up after 1.5 s, whatever its join time.
+        // The module does not answer: the exit (StopAndWait) gives up 1.5 s after the Stop that handed the release
+        // over, whatever its join time.
         var h = new Harness();
         h.Packet(Frames.Ascii("ELRS"), DefIp);
         h.Same(DefIp, 16, 100);
         using var hold = new ManualResetEventSlim();
+        using var inFlight = new ManualResetEventSlim();
         h.Engine.AsyncPostsForTest = true;
         h.Engine.ActivateOverride = p =>
         {
-            if (Harness.IsRelease(p)) hold.Wait(10000);
+            if (Harness.IsRelease(p))
+            {
+                inFlight.Set();
+                hold.Wait(10000);
+            }
             return true;
         };
         try
         {
             var sw = Stopwatch.StartNew();
+            h.Engine.Stop();
+            // its POST in flight before the wait runs out: one whose thread started only after it would be cut short
+            // before it went out (not sent), and done
+            Assert.True(inFlight.Wait(5000));
             h.Engine.StopAndWait(100);
             double s = sw.Elapsed.TotalSeconds;
             Assert.InRange(s, JoystickEngine.RELEASE_WAIT_SEC - 0.1, JoystickEngine.RELEASE_WAIT_SEC + 1.0);
@@ -1241,10 +1251,15 @@ public class ReleaseTests
         h.Packet(Frames.Ascii("ELRS"), DefIp);
         h.Same(DefIp, 16, 100);
         using var hold = new ManualResetEventSlim();
+        using var inFlight = new ManualResetEventSlim();
         h.Engine.AsyncPostsForTest = true;
         h.Engine.ActivateOverride = p =>
         {
-            if (Harness.IsRelease(p)) hold.Wait(10000);
+            if (Harness.IsRelease(p))
+            {
+                inFlight.Set();
+                hold.Wait(10000);
+            }
             return true;
         };
         try
@@ -1252,6 +1267,9 @@ public class ReleaseTests
             var sinceStop = Stopwatch.StartNew();
             h.Engine.Stop();
             Assert.Equal(1, h.Engine.ReleasesPending);
+            // its POST in flight before the wait runs out: one whose thread started only after it would be cut short
+            // before it went out (not sent), and done
+            Assert.True(inFlight.Wait(5000));
             Thread.Sleep(1000);
             var exit = Stopwatch.StartNew();
             h.Engine.StopAndWait(100);
@@ -1366,6 +1384,7 @@ public class ReleaseTests
             },
         };
         e.Log += m => { lock (log) log.Add(m); };
+        int Logged(string start) { lock (log) return log.Count(l => l.StartsWith(start)); }
         var f16 = Frames.Channels(Enumerable.Repeat(100, 16).ToArray());
         e.Start();
         try
@@ -1377,13 +1396,16 @@ public class ReleaseTests
             e.Stop();
             e.Start();
             Assert.True(WaitFor(() => e.IsRunning, 2000));
-            Thread.Sleep(250);
+            // the new run has bound the port (it logs this right after): a datagram sent before that is lost
+            Assert.True(WaitFor(() => Logged("Listening for joystick data") == 2, 3000));
             Assert.True(WaitFor(() => { lock (posts) return posts.Any(Harness.IsRelease); }, 3000), "the release goes out");
             Assert.Equal(1, e.ReleasesPending);
             // the new session: the module beacons again (released), its joystick_begin queues behind the release
             int before;
             lock (posts) before = posts.Count;
-            Send(port, Frames.Ascii("ELRS"));
+            // sent until the engine took it (it logs this, then queues the joystick_begin; the next ones are throttled)
+            Assert.True(WaitFor(() => { Send(port, Frames.Ascii("ELRS"));
+                                        return Logged("Discovery beacon from ELRS module 127.0.0.1") == 2; }, 3000));
             Thread.Sleep(300);
             lock (posts) Assert.Equal(before, posts.Count);
             hold.Set();
@@ -1555,6 +1577,10 @@ public class ReleaseTests
             Assert.True(WaitFor(() => e.IsRunning, 2000));
             Assert.True(WaitFor(() => Count(p => p == begin2000) == 2, 3000), "the module IP's joystick_begin");
             LockAgain();
+            // the restart is queued on the engine thread after the lock LockAgain waits for: wait for it, then for
+            // its POSTs (its log line comes before it is queued)
+            Assert.True(WaitFor(() => Count(Restart) == 1, 3000));
+            Assert.True(e.WaitForPostsForTest(5000));
             Assert.Equal(1, Count(Restart));
             Assert.Equal(1, Logged($"{ip} may still stream its old request (Stop cut its restart short) - " +
                                    "restarting its stream with 500 Hz, 16 channels"));

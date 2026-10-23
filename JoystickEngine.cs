@@ -1536,14 +1536,17 @@ namespace ELRSWifiJoystick
             }
 
             // The real HTTP POSTs run off-thread: a slow or unreachable module (5s timeout each) must not
-            // stall the receive loop, and Stop/exit must not wait on them either.
+            // stall the receive loop, and Stop/exit must not wait on them either. Each on a thread of its own
+            // (LongRunning), not the shared thread pool: a POST blocks its thread until the answer, and a pool
+            // that is busy (other work, modules that don't answer) starts a new thread only every half second or
+            // so, which held a restart back for seconds.
             lock (postChains)
             {
                 PruneChains();
                 postChains.TryGetValue(ip, out var prev);
                 postChains[ip] = (prev ?? Task.CompletedTask).ContinueWith(
                     _ => Done(ip, restart, seq, Activate(ip, restart, iv, ch, s, token), s),
-                    CancellationToken.None, TaskContinuationOptions.None, TaskScheduler.Default);
+                    CancellationToken.None, TaskContinuationOptions.LongRunning, TaskScheduler.Default);
             }
         }
 
@@ -1702,8 +1705,8 @@ namespace ELRSWifiJoystick
                 if (releaseCancel.IsCancellationRequested) releaseCancel = new CancellationTokenSource();
                 CancellationToken token = releaseCancel.Token;
                 postChains.TryGetValue(ip, out var prev);
-                var t = (prev ?? Task.CompletedTask).ContinueWith(_ => SendRelease(post, token),
-                    CancellationToken.None, TaskContinuationOptions.None, TaskScheduler.Default);
+                var t = (prev ?? Task.CompletedTask).ContinueWith(_ => SendRelease(post, token),   // own thread, as Post
+                    CancellationToken.None, TaskContinuationOptions.LongRunning, TaskScheduler.Default);
                 postChains[ip] = t;
                 releases.RemoveAll(r => r.IsCompleted);     // what Stop after Stop left: the list stays short
                 releases.Add(t);
