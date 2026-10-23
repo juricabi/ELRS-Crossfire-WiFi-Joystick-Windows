@@ -62,14 +62,14 @@ public class EngineLifecycleTests
         try
         {
             Assert.True(WaitFor(() => e.IsRunning, 2000));
-            Thread.Sleep(250); // let the socket bind
 
-            Send(port, Frames.Ascii("VELOCIDRONE"));
-            Assert.True(WaitFor(() => { lock (activated) return activated.Count > 0; }, 3000),
+            // sent again until it is heard: a datagram sent before the engine thread has bound the port is lost
+            Assert.True(WaitFor(() => { Send(port, Frames.Ascii("VELOCIDRONE"));
+                                        lock (activated) return activated.Count > 0; }, 3000),
                 "beacon should trigger activation");
 
-            Send(port, Frames.Channels(100, 200, 300, 400));
-            Assert.True(streaming.Wait(3000), "channel data should reach Streaming state");
+            Assert.True(WaitFor(() => { Send(port, Frames.Channels(100, 200, 300, 400)); return streaming.IsSet; }, 3000),
+                "channel data should reach Streaming state");
             Assert.True(WaitFor(() => { lock (applied) return applied.Count > 0; }, 2000));
             lock (applied) Assert.Equal(new[] { 100, 200, 300, 400 }, applied[0]);
         }
@@ -128,7 +128,8 @@ public class EngineLifecycleTests
         e.Start();
         try
         {
-            Assert.True(error.Wait(3000), "binding an occupied port must surface an Error state");
+            // after five binds 300 ms apart (1.5 s): room for a busy machine
+            Assert.True(error.Wait(10000), "binding an occupied port must surface an Error state");
         }
         finally
         {
@@ -148,8 +149,8 @@ public class EngineLifecycleTests
         using (var blocker = new UdpClient(port))
         {
             e.Start();
-            Assert.True(error.Wait(3000));
-            Assert.True(WaitFor(() => !e.IsRunning, 3000));
+            Assert.True(error.Wait(10000));                    // after five binds 300 ms apart (1.5 s)
+            Assert.True(WaitFor(() => !e.IsRunning, 10000));
             e.SetTarget("10.0.0.1");
             Assert.False(e.RestartStream());
             lock (log) Assert.Contains("Not running - nothing to restart", log);
@@ -159,7 +160,7 @@ public class EngineLifecycleTests
         e.Start();
         try
         {
-            Assert.True(WaitFor(() => { lock (activated) return activated.Contains("10.0.0.1"); }, 3000));
+            Assert.True(WaitFor(() => { lock (activated) return activated.Contains("10.0.0.1"); }, 10000));
         }
         finally
         {
@@ -224,12 +225,14 @@ public class EngineLifecycleTests
         {
             Thread.Sleep(250);
             Assert.True(WaitFor(() => { SendFrom("127.0.0.2", port, Frames.Channels(Enumerable.Repeat(32767, 16).ToArray()));
-                                        return e.Source == "127.0.0.2"; }, 3000));
+                                        return e.Source == "127.0.0.2"; }, 10000));
             Assert.True(WaitFor(() => e.ButtonMask == 0xFF, 2000));
             flood.Start();
-            Assert.True(WaitFor(() => { lock (log) return log.Contains("Source 127.0.0.2 went quiet - releasing lock"); }, 5000),
+            // 3 s of quiet, then the next tick: room for a busy machine
+            Assert.True(WaitFor(() => { lock (log) return log.Contains("Source 127.0.0.2 went quiet - releasing lock"); }, 10000),
                         "the lock must be released while other traffic arrives");
-            Assert.Null(e.Source);
+            // the engine thread logs that line, then lets the lock go: wait for it, not read it at once
+            Assert.True(WaitFor(() => e.Source == null, 2000));
             Assert.True(WaitFor(() => e.ButtonMask == 0, 1000));
         }
         finally
@@ -314,8 +317,11 @@ public class EngineLifecycleTests
             lock (posts) Assert.Equal(new[] { Harness.Release("127.0.0.1") }, posts.Where(p => p.Action == JoystickEngine.ActionEnd));
             e.Start();
             Thread.Sleep(250);
-            Assert.True(WaitFor(() => { Send(port, f8); lock (posts) return posts.Any(p => p.Action == JoystickEngine.ActionEnd && p.Restart); }, 3000),
+            // the restart's joystick_begin, which goes out right after its joystick_end (waiting for the end alone
+            // could look in between)
+            Assert.True(WaitFor(() => { Send(port, f8); lock (posts) return posts.Any(p => p.Action == JoystickEngine.ActionBegin && p.Restart); }, 3000),
                         "the module that kept streaming the old request is restarted");
+            lock (posts) Assert.Equal(new ActivationPost("127.0.0.1", JoystickEngine.ActionEnd, 0, 0, true), posts[^2]);
             lock (posts) Assert.Equal(new ActivationPost("127.0.0.1", JoystickEngine.ActionBegin, 2000, 8, true), posts[^1]);
         }
         finally
@@ -333,6 +339,10 @@ public class EngineLifecycleTests
         const int port = 27416;
         var posts = new List<ActivationPost>();
         var log = new List<string>();
+        var trace = new List<string>();                 // what happened when, for a failure's message
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        void Trace(string what) { lock (trace) trace.Add($"{clock.ElapsedMilliseconds,6} ms  {what}"); }
+        string Dump() { lock (trace) return "\n" + string.Join("\n", trace); }
         using var hold = new ManualResetEventSlim();
         var e = new JoystickEngine
         {
@@ -341,11 +351,12 @@ public class EngineLifecycleTests
             {
                 int n;
                 lock (posts) { posts.Add(p); n = posts.Count; }
+                Trace($"POST {p}");
                 if (n == 1) hold.Wait(5000);            // the activation hangs
                 return !Harness.IsRelease(p);
             },
         };
-        e.Log += m => { lock (log) log.Add(m); };
+        e.Log += m => { lock (log) log.Add(m); Trace($"log  {m}"); };
         e.SetRequest(4000, 8);
         var f8 = Frames.Channels(Enumerable.Repeat(100, 8).ToArray());
         e.Start();
@@ -355,22 +366,64 @@ public class EngineLifecycleTests
             Assert.True(WaitFor(() => { Send(port, Frames.Ascii("ELRS")); lock (posts) return posts.Count > 0; }, 3000));
             Assert.True(WaitFor(() => { Send(port, f8); return e.Source != null; }, 3000));
             Assert.True(e.SetRequest(2000, 8));                // queued behind the hanging activation
+            Trace("StopAndWait");
             e.StopAndWait(2000);                               // the release waits behind it too: at most 1.5 s
+            Trace("StopAndWait returned");
             hold.Set();
             Assert.True(e.WaitForPostsForTest(5000));
             lock (posts) Assert.Empty(posts.Where(p => p.Action == JoystickEngine.ActionEnd));
             lock (log) Assert.Contains("Releasing 127.0.0.1 failed: not sent, the wait ran out before its turn - it may " +
                                        "stream on until its WiFi or power is cycled", log);
+            Trace("Start");
             e.Start();
             Thread.Sleep(250);
             Assert.True(WaitFor(() => { Send(port, f8); lock (posts) return posts.Any(p => p.Action == JoystickEngine.ActionEnd && p.Restart); }, 3000),
-                        "the module that kept the old request is restarted");
+                        "the module that kept the old request is restarted" + Dump());
             Assert.True(e.WaitForPostsForTest(5000));
             lock (posts) Assert.Equal(new ActivationPost("127.0.0.1", JoystickEngine.ActionBegin, 2000, 8, true), posts[^1]);
         }
         finally
         {
             hold.Set();
+            e.StopAndWait(2000);
+        }
+    }
+
+    [Fact]
+    public void Posts_RunOnThreadsOfTheirOwn_NotThePool()
+    {
+        // A POST blocks its thread until the module answers (5 s for one that doesn't). On the shared thread pool,
+        // a busy pool held a restart back for seconds (the full suite on a fast Windows runner): the activation's
+        // and the release's POST chains each run on a thread of their own (LongRunning).
+        const int port = 27423;
+        var posts = new List<(ActivationPost Post, bool Pool)>();
+        var e = new JoystickEngine
+        {
+            Port = port, SkipVJoyForTest = true, OutputOverride = _ => { }, AsyncPostsForTest = true,
+            ActivateOverride = p => { lock (posts) posts.Add((p, Thread.CurrentThread.IsThreadPoolThread)); return true; },
+        };
+        // 8 channels asked and streamed: no mismatch restart, so the only joystick_end is the release's
+        e.SetRequest(4000, 8);
+        var f8 = Frames.Channels(Enumerable.Repeat(100, 8).ToArray());
+        e.Start();
+        try
+        {
+            Thread.Sleep(250);
+            Assert.True(WaitFor(() => { Send(port, Frames.Ascii("ELRS")); lock (posts) return posts.Count > 0; }, 3000));
+            Assert.True(WaitFor(() => { Send(port, f8); return e.Source != null; }, 3000));
+            e.Stop();                                           // releases the locked module
+            // waited for in full: an exit's wait (StopAndWait) would cut short a release whose thread starts late
+            Assert.True(e.WaitForReleases(TimeSpan.FromSeconds(5)));
+            Assert.True(e.WaitForPostsForTest(5000));
+            lock (posts)
+            {
+                Assert.Contains(posts, x => x.Post.Action == JoystickEngine.ActionBegin && !x.Post.Restart);
+                Assert.Contains(posts, x => Harness.IsRelease(x.Post));
+                Assert.All(posts, x => Assert.False(x.Pool, $"{x.Post} ran on a thread-pool thread"));
+            }
+        }
+        finally
+        {
             e.StopAndWait(2000);
         }
     }
