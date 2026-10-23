@@ -7,6 +7,7 @@ namespace ELRSWifiJoystick
     public partial class App : Application
     {
         private Mutex? singleInstanceMutex;
+        private MainWindow? mainWindow;
 
         protected override void OnStartup(StartupEventArgs e)
         {
@@ -56,9 +57,18 @@ namespace ELRSWifiJoystick
                     "Command line:\n\n" + string.Join("\n", opt.Errors) + "\n\nThese were ignored. " + opt.Summary,
                     "ELRS / Crossfire WiFi Joystick", MessageBoxButton.OK, MessageBoxImage.Warning);
 
-            var window = new MainWindow(opt.Port, opt.TxIp, opt.IntervalUs, opt.Channels);
-            MainWindow = window;
-            window.Show();
+            mainWindow = new MainWindow(opt.Port, opt.TxIp, opt.IntervalUs, opt.Channels);
+            MainWindow = mainWindow;
+            mainWindow.Show();
+        }
+
+        // A logoff, restart or shutdown with the app running (often in the tray): the window's Closing is not raised
+        // then, and Windows may end the process soon after this returns. So stop and release the module here, like
+        // closing the app (R14): it waits at most 1.5 s for the module's answer.
+        protected override void OnSessionEnding(SessionEndingCancelEventArgs e)
+        {
+            base.OnSessionEnding(e);
+            if (!e.Cancel) mainWindow?.EndSession();
         }
 
         protected override void OnExit(ExitEventArgs e)

@@ -30,7 +30,8 @@
             <tb:TaskbarIcon.ContextMenu>
                 <ContextMenu>
                     <MenuItem Header="Show" Click="TrayShow_Click" />
-                    <MenuItem Header="Exit" Click="TrayExit_Click" />
+                    <MenuItem Header="Exit" Click="TrayExit_Click"
+                              ToolTip="Close the app and release the module, so any app can connect to it" />
                 </ContextMenu>
             </tb:TaskbarIcon.ContextMenu>
         </tb:TaskbarIcon>
@@ -155,7 +156,7 @@
             <Button Content="Connect" Command="{Binding ConnectCommand}"
                     Style="{StaticResource DarkButton}" Margin="12,0,0,0" MinWidth="84" />
             <Button Command="{Binding StartStopCommand}" Style="{StaticResource DarkButton}"
-                    Margin="8,0,0,0" MinWidth="74">
+                    Margin="8,0,0,0" MinWidth="74" ToolTip="{Binding StartStopToolTip}">
                 <Button.Content>
                     <TextBlock>
                         <TextBlock.Style>

@@ -48,10 +48,16 @@ class Harness
 
     public int StreamingCount => States.Count(s => s.State == EngineState.Streaming);
 
-    // One joystick_end per restart; the joystick_begin that follows it carries the request.
+    // One joystick_end per restart (and per release, R14); the joystick_begin that follows a restart's carries the
+    // request.
     public List<ActivationPost> Ends => Posts.Where(p => p.Action == JoystickEngine.ActionEnd).ToList();
     public List<ActivationPost> RestartBegins =>
         Posts.Where(p => p.Action == JoystickEngine.ActionBegin && p.Restart).ToList();
+    // The releases (R14): a joystick_end alone, not part of a restart.
+    public List<ActivationPost> Releases => Posts.Where(IsRelease).ToList();
+
+    public static bool IsRelease(ActivationPost p) => p.Action == JoystickEngine.ActionEnd && !p.Restart;
+    public static ActivationPost Release(string ip) => new(ip, JoystickEngine.ActionEnd, 0, 0, false);
     public int CountLog(string part) => Log.Count(l => l.Contains(part));
 
     // n channels, all at v.

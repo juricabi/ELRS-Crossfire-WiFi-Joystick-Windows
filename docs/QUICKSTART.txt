@@ -1,4 +1,4 @@
-﻿ELRS / TBS Crossfire WiFi Joystick for Windows  -  v3.3
+﻿ELRS / TBS Crossfire WiFi Joystick for Windows  -  v3.4
 =========================================================
 
 Use your ExpressLRS or TBS Crossfire/Tracer radio as a wireless joystick on
@@ -54,8 +54,14 @@ TIPS
 - Click "Help" in the app for short tutorials on every feature.
 - Minimize to the system tray while flying - the joystick keeps working and
   CPU use drops to almost nothing.
-- The module keeps broadcasting until it is powered off; that's normal
-  (closing the app only stops reading it).
+- Stop and closing the app (a Windows shutdown too) release the module:
+  ELRS gets a stop (joystick_end), stops streaming to this PC and
+  broadcasts again, so any app can connect to it. A module known as
+  Crossfire by its beacon is not sent it (it broadcasts while streaming
+  anyway). Closing waits at most 1.5 s for it.
+- The app can't find a module that StickTime Pi or another app used? It
+  streams to that app until released. Stop or close the other app (on the
+  Pi: Release), or type the module's IP into "Module IP" and click Connect.
 - When no data comes for 3 s (radio off, out of range), the vJoy axes go to
   the center and the buttons are released; the same on Stop, on closing and
   on Connect to another module. Shorter gaps hold the last values.

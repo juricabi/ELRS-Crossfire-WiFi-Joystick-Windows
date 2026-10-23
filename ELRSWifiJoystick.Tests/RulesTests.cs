@@ -442,7 +442,7 @@ public class RulesTests
             Assert.Equal(2, posts.Count(p => p.Action == JoystickEngine.ActionEnd));
             Assert.Equal(new ActivationPost(DefIp, JoystickEngine.ActionBegin, 2000, 16, true), posts.Last());
         }
-        Assert.Equal(1, h.CountLog("192.168.1.50 may still stream its old request (its last restart did not take) - " +
+        Assert.Equal(1, h.CountLog("192.168.1.50 may still stream its old request (its restart failed) - " +
                                    "restarting its stream with 500 Hz, 16 channels"));
     }
 
@@ -471,7 +471,7 @@ public class RulesTests
         Assert.Equal(DefIp, h.Engine.Source);
         Assert.Equal(2, h.Ends.Count);
         Assert.Equal(new ActivationPost(DefIp, JoystickEngine.ActionBegin, 2000, 8, true), h.RestartBegins[1]);
-        Assert.Equal(1, h.CountLog("192.168.1.50 may still stream its old request (its last restart did not take) - " +
+        Assert.Equal(1, h.CountLog("192.168.1.50 may still stream its old request (its restart failed) - " +
                                    "restarting its stream with 500 Hz, 8 channels"));
         for (int i = 0; i < 30; i++) { h.Same(DefIp, 8, 100); h.Engine.Tick(); h.Clock.Advance(0.1); }
         Assert.Equal(2, h.Ends.Count);                        // it took

@@ -271,8 +271,10 @@ public class RequestTests
         for (int i = 0; i < 19; i++) { h.Clock.Advance(1); h.Same(DefIp, 16, 16000); h.Engine.Tick(); }
         Assert.Empty(h.Ends);
         h.Clock.Advance(1);
-        h.Same(DefIp, 16, 16000);                             // 20 s of lock without a Crossfire beacon: ELRS
-        Assert.Single(h.Ends);                                // decided by the frame (Tick starves while data flows)
+        h.Same(DefIp, 16, 16000);
+        Assert.Empty(h.Ends);                                 // decided on the tick, as in the core
+        h.Engine.Tick();                                      // 20 s of lock without a Crossfire beacon: ELRS
+        Assert.Single(h.Ends);
         Assert.Equal(5000, h.RestartBegins[0].IntervalUs);
         h.Same(DefIp, 16, 16000);
         h.Engine.Tick();
@@ -340,11 +342,11 @@ public class RequestTests
         h = new Harness();
         h.Same(DefIp, 16, 16000);
         h.Engine.SetRequest(10000, 16);
-        h.Engine.Stop();
+        h.Engine.Stop();                                      // the release (R14), no restart
         h.Clock.Advance(21);
         h.Same(DefIp, 16, 16000);                             // a frame still in flight after Stop
         h.Engine.Tick();
-        Assert.Empty(h.Ends);
+        Assert.Equal(Harness.Release(DefIp), Assert.Single(h.Ends));
     }
 
     [Fact]
@@ -718,6 +720,8 @@ public class RequestTests
         h.Same(DefIp, 16, 100);
         h.Posts.Clear();
         h.Engine.Stop();
+        Assert.Equal(new[] { Harness.Release(DefIp) }, h.Posts);   // the release (R14), nothing after it
+        h.Posts.Clear();
         Assert.Equal(DefIp, h.Engine.Source);              // the lock stays until the loop exits
         Assert.True(h.Engine.SetRequest(2000, 16));         // stored for the next start
         Assert.Equal(2000, h.Engine.IntervalUs);
@@ -829,7 +833,8 @@ public class RequestTests
         for (int i = 0; i < 19; i++) { h.Clock.Advance(1); h.Same(DefIp, 16, 100); }
         Assert.Empty(h.Ends);
         h.Clock.Advance(1.1);
-        h.Same(DefIp, 16, 100);                               // 20 s without a Crossfire beacon: no Crossfire
+        h.Same(DefIp, 16, 100);
+        h.Engine.Tick();                                      // 20 s without a Crossfire beacon: no Crossfire
         Assert.Single(h.Ends);
         Assert.Equal(8, Assert.Single(h.RestartBegins).Channels);
         for (int i = 0; i < 30; i++) { h.Clock.Advance(1); h.Same(DefIp, 16, 100); h.Engine.Tick(); }
@@ -902,7 +907,9 @@ public class RequestTests
         e.ResetSessionState();                                // what the next Start does first
         answer.Set();
         Assert.True(e.WaitForPostsForTest(5000));
-        lock (posts) Assert.Equal(new[] { JoystickEngine.ActionBegin }, posts.Select(p => p.Action));
+        // the activation, then the release of Stop (R14) after it: not the restart
+        lock (posts) Assert.Equal(new[] { new ActivationPost(DefIp, JoystickEngine.ActionBegin, 4000, 16, false),
+                                          Harness.Release(DefIp) }, posts);
         clock.Advance(10);
         e.Tick();
         lock (log) Assert.DoesNotContain(log, l => l.Contains("NO data arriving"));

@@ -20,6 +20,8 @@ Both radios use the same "WiFi joystick" protocol (the one VelociDrone Mobile sp
 > **v3.0** is a ground-up WPF interface: vector-rendered, so it is pixel-perfect on **any** display scale (100/125/150/200%), with GPU-composited live axis bars, packet rate + jitter, connection status, and one-click firewall setup. It still auto-discovers your module and just works.
 >
 > **v3.3**: the **rate and channel count are settings** - ELRS is asked for **250 Hz × 16 channels** by default (was 100 Hz × 8), adjustable live - and **CH9-CH16 are joystick buttons 1-8**.
+>
+> **v3.4**: **Stop and closing release the module**: ELRS gets `joystick_end`, stops streaming to this PC and broadcasts again, so any app (another PC, [StickTime Pi](https://github.com/juricabi/sticktime-pi)) can find it. See [Stop and closing](#-stop-and-closing-release-the-module).
 
 > 🐧 **On Linux?** [ELRS-Crossfire-WiFi-Joystick-Linux](https://github.com/juricabi/ELRS-Crossfire-WiFi-Joystick-Linux) does the same there (uinput joystick, terminal UI and a web page), with the same protocol behaviour, defaults and axis order.
 
@@ -33,6 +35,7 @@ Both radios use the same "WiFi joystick" protocol (the one VelociDrone Mobile sp
 - 🌐 **Auto-discovery** - detects and activates ELRS *and* TBS Crossfire/Tracer modules automatically (or type the IP)
 - 🛡️ **One-click firewall** - detects and adds the required Windows Firewall rule for you (the #1 "no data" cause)
 - 🔒 **Single-source lock** - if two modules are on the network, only one drives the joystick; pick a specific one by IP
+- 🔓 **Releases the module** - Stop and closing send ELRS `joystick_end`, so the module broadcasts again and the next app finds it
 - 📉 **Accurate metrics** - high-resolution jitter/rate measurement
 - ❓ **Built-in Help** - a Help button with short tutorials for every feature
 - 🪶 **Light & CPU-friendly** - minimize to the system tray to pause the on-screen bars and drop CPU to ~1% (the joystick keeps working); single-instance
@@ -108,7 +111,8 @@ line 1 of `docs/QUICKSTART.txt` and the CLI banner in `ELRSWifiJoystick.Cli/Prog
 The engine and the view model have a full xUnit test suite (`ELRSWifiJoystick.Tests/`)
 covering the protocol (beacons, channel frames, malformed packets), the source-lock state
 machine (and the centering when the lock goes), activation throttling, the request (rate/channels) and stream restarts
-(the rules R1-R13 at the top of `JoystickEngine.cs`, the same as the Linux version's), the channel
+(the rules R1-R14 at the top of `JoystickEngine.cs`, the same as the Linux version's and StickTime Pi's),
+the release on Stop and exit, the channel
 to axis/button mapping, rate/jitter math, socket-level lifecycle (restart, port-in-use, clean
 shutdown), both command lines, and the UI state mapping (banner, axis bars, drop-downs, log
 capping). Tests inject a fake clock/output/activator, so they need neither vJoy nor a module.
@@ -190,6 +194,10 @@ the "Velocidrone Mobile" support built into the TBS WiFi module.
      **Connect** to target a specific module (skips the beacon wait; find the IP on the
      module's WiFi web page). **Stop** clears it (`s` in the CLI too), so the next Start
      auto-discovers again: type the IP and Connect to target the module again.
+   - **Stop** — stops listening and **releases the module** (`joystick_end`): it stops streaming
+     to this PC and broadcasts again, so any app can connect to it. Closing the window (or *Exit*
+     in the tray menu) does the same, and so does a Windows logoff, restart or shutdown while the
+     app runs (in the tray too). The tooltip of the button says so.
    - **Port** — the UDP port (default `11000`); change it while stopped.
    - **Rate / Channels** — what the module is asked for (default **250 Hz**, **16 channels**);
      ExpressLRS takes a change by restarting its stream (see [Rate & channels](#-rate--channels)).
@@ -211,11 +219,47 @@ the "Velocidrone Mobile" support built into the TBS WiFi module.
 mistake - a value that is not supported, a missing value, an unknown option, a module IP that is
 not `a.b.c.d` - is reported in a message box, which says what the app uses instead.
 
-> **Stopping the module's stream:** once activated, the module keeps broadcasting channel data
-> until it is powered off, rebooted, or its WiFi drops. Closing this app only stops *reading*
-> the stream. ELRS has a remote stop command (`joystick_end`), which the app sends only to
-> restart the stream with a new rate or channel count. How Crossfire responds to `joystick_end`
-> is unknown, so the app does not send it one (to a module known as Crossfire by its beacon).
+## 🔓 Stop and closing release the module
+
+Once activated, an ELRS module streams to the app that started it until it gets `joystick_end`,
+loses power or loses its WiFi, and it broadcasts its beacon only while it is not streaming. A
+module left streaming to an app that stopped can't be found by any other app: not by this app on
+another PC, not by [StickTime Pi](https://github.com/juricabi/sticktime-pi), not by the Linux app.
+
+So **Stop and closing release it** (rule R14, the same in the Linux app and StickTime Pi):
+
+- `action=joystick_end` alone goes to the module streaming to the app, then to every module that
+  streams to this PC while the app drops its frames (a frame of it came less than 3 s ago): a
+  second module (the app follows one), a module sending placeholder frames (no stick data), and
+  the module left by **Connect** to another module IP that streams on. Then to every module asked
+  to start (`joystick_begin`) less than 3 s ago that has not streamed to the app since (it may be
+  about to). Each module gets it once, the ones known to stream first. A module of unknown kind
+  gets it too (an ELRS module streaming since before the app started has sent no beacon), except,
+  with a module IP set, one the app neither asked to start nor followed since its Start: the app
+  hears no other module's beacons then, so it could be a Crossfire.
+- A module known as **Crossfire** by its beacon is not sent it: it broadcasts also while
+  streaming, so other apps find it anyway, and what `joystick_end` does to it is unknown. The log
+  says `Not releasing <ip>: Crossfire broadcasts while streaming, other apps find it as it is`.
+- The log says `Releasing <ip>: joystick_end, so it stops streaming and broadcasts again`, then
+  `Released <ip>: it broadcasts again, any app can connect to it`, or `Releasing <ip> failed:
+  <why> - it may stream on until its WiFi or power is cycled` (why: `HTTP <status>` for an answer
+  that is not 2xx, else the error, such as `timed out after 5 s`; `no answer in time` when closing
+  cut it short, `not sent, the wait ran out before its turn` for one still waiting behind another
+  request to that module).
+- The `joystick_end` goes out off the UI thread, after anything still on its way to that module,
+  and a quick Start does not cancel it. Closing the app waits for the answer at most **1.5 s**
+  after the Stop that sent it (closing 1 s after a Stop waits at most 0.5 s more): the window,
+  *Exit* in the tray menu, a Windows logoff, restart or shutdown; in the CLI `q`, `quit`, Ctrl+C
+  and closing its console window. A logoff or shutdown may end the CLI without a release: quit it
+  first.
+- A release changes nothing else, except that once the module took it (`Released <ip>`), the app
+  forgets what it asked that module: the module is idle then, and its next `joystick_begin` gives it
+  the rate and channel count, so Stop, another rate, then **Connect** does not restart it. Its kind
+  stays known. A module that missed its `joystick_end` streams on, as before, and the next session
+  restarts it if the request changed meanwhile (see [Rate & channels](#-rate--channels)).
+- **Connect** to another module IP sends the module left nothing at once (no release, no restart);
+  Stop releases it if it still streams to this PC.
+- The port changes only while stopped, so a port change is a Stop, with its release, and a Start.
 
 ## ⚡ Rate & channels
 
@@ -257,10 +301,13 @@ Channels: **4 to 16**. The GUI offers these values in two drop-downs; on the com
   said (up to 8 modules, never forgetting the kind of the one streaming now), and keeps both
   across Stop and Start or a port change (those clear the lock, the 5 s limits and waiting
   restarts; Stop also clears the Module IP): a module that streams to the app again with an
-  older request (it streams on through those) is restarted then, by the rules above (`<ip> still
-  streams 250 Hz, 16 channels from before the change - restarting its stream with ...`).
+  older request (it streams on through a dropout, and through a Stop when it missed its release or
+  is a Crossfire) is restarted then, by the rules above (`<ip> still
+  streams 250 Hz, 16 channels from before the change - restarting its stream with ...`). A module
+  the Stop released is not streaming: it takes the new request from its next `joystick_begin`,
+  with no restart.
 - **At startup** the values from the command line only set the next `joystick_begin`. A module
-  still streaming from before (it keeps streaming after the app quits) keeps its old rate - the
+  still streaming from before (another app's, or one that missed this app's release) keeps its old rate - the
   frames don't carry it, the stats show it: pick another rate and back, or press `a` in the CLI.
   Only a different channel count is fixed by itself, once per module and session: a module that
   is surely ELRS and streams another channel count than asked (left over from another app or
@@ -281,11 +328,12 @@ Channels: **4 to 16**. The GUI offers these values in two drop-downs; on the com
   to try again. The app then no longer knows what the module streams: if the app gave up, or the
   module stopped streaming to the app before the next send (a dropout of more than 3 s, Stop and
   Start, Connect to another module), it is restarted once more when it streams to the app again,
-  by the rules above (`<ip> may still stream its old request (its last restart did not take) -
-  restarting its stream with ...`) - unless its ELRS beacon got it a `joystick_begin` with the
-  request meanwhile. A plain `joystick_begin`
-  that fails is never turned into a restart: the next beacon, or the module IP's next try,
-  sends it again after 5 s.
+  by the rules above (`<ip> may still stream its old request (its restart failed) - restarting
+  its stream with ...`) - unless its ELRS beacon got it a `joystick_begin` with the request
+  meanwhile. The same for a restart that Stop cut short before its answer came (`... (Stop cut
+  its restart short) ...`), unless the release after it took. A plain `joystick_begin` that
+  fails is never turned into a restart: the next beacon, or the module IP's next try, sends it
+  again after 5 s.
 - **Connect** (`t` in the CLI) to the module that streams now keeps it: nothing is sent,
   nothing centered (`Target module set to <ip> - streaming from it already`). Another module IP
   lets go of the module streaming now (the joystick centers), asks the new one at once with the
@@ -333,6 +381,7 @@ version, so bindings carry over):
 | "vJoy driver not enabled" | Install vJoy driver and enable device #1 in "Configure vJoy" |
 | "vJoy Device 1 is already owned" | Close other applications using vJoy device #1 |
 | "Waiting for joystick data..." | Ensure the TX module is connected to WiFi; for Crossfire, wait for the `VELOCIDRONE` beacon or pass `--tx <module-ip>` |
+| The app can't find a module that StickTime Pi or another app used | An ELRS module streams to that app until it is released, and sends no beacon meanwhile. Stop or close the other app (StickTime Pi: its Release button), or type the module's IP into **Module IP** and press **Connect** (`--tx <ip>`, `t` in the CLI): that moves its stream to this PC. Power-cycling the module works too |
 | Switches (CH9-CH16) do nothing in the sim | The vJoy device needs buttons: set **8 buttons** in *Configure vJoy* (the log says how many it has). The module must send 16 channels: set Channels to 16 |
 | Rate stays at ~90 Hz / Rate and Channels are greyed out | That's a Crossfire module: it always sends 16 channels at about 90 Hz, whatever is asked |
 | ELRS rate or channel count doesn't change | ELRS takes them from 3.4.0 on; older firmware streams its own fixed values |
@@ -418,6 +467,11 @@ netsh advfirewall firewall add rule name="ELRS WiFi Joystick" dir=in action=allo
   when both got a 2xx; a failed one is sent again 5 s after its last send while the module
   streams to the app, 3 sends in all (the first and up to 2 more). POSTs to one module go out
   one after the other, off the receive thread.
+- **Release** (on Stop and exit, ELRS and unknown kind only): `action=joystick_end` alone to the
+  module streaming to the app, to the other modules streaming to this PC whose frames it drops,
+  and to the ones activated less than 3 s ago; an exit waits for the answers at most 1.5 s after
+  the Stop that sent them (see
+  [Stop and closing](#-stop-and-closing-release-the-module)).
 - **Transport**: UDP packets on port 11000
 - **Packet Format**:
   - Byte 0: Frame type (1 = channels)

@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Threading;
 
 namespace ELRSWifiJoystick
@@ -15,6 +16,8 @@ namespace ELRSWifiJoystick
         private static volatile bool streaming;
         private static bool live;              // interactive console (not redirected)
         private static bool statusShown;
+        private static readonly object exitGate = new();
+        private static bool exited;            // StopForExit ran (under exitGate)
 
         static int Main(string[] args)
         {
@@ -52,7 +55,7 @@ namespace ELRSWifiJoystick
             live = !Console.IsOutputRedirected;
             try { Console.Title = "ELRS / TBS Crossfire WiFi Joystick (CLI)"; } catch { }
 
-            WriteLine(ConsoleColor.Cyan, $"ELRS / TBS Crossfire WiFi Joystick CLI v3.3  -  listening on UDP {port}");
+            WriteLine(ConsoleColor.Cyan, $"ELRS / TBS Crossfire WiFi Joystick CLI v3.4  -  listening on UDP {port}");
             WriteLine(ConsoleColor.Gray, "  Features : auto-discovery (ELRS + Crossfire/Tracer) | single-source lock");
             WriteLine(ConsoleColor.Gray, "             vJoy: CH1-8 axes, CH9-16 buttons 1-8 | rate & jitter stats | firewall auto-rule");
             WriteLine(ConsoleColor.Gray, "             ELRS streams at the rate asked for: 250 Hz by default, adjustable (r, --rate)");
@@ -61,7 +64,9 @@ namespace ELRSWifiJoystick
                                          "  (Crossfire ignores it: always 16 channels, about 90 Hz)");
             WriteLine(ConsoleColor.Gray, "  Keys     : [s] start/stop  [t] module IP / connect  [p] port  [r] rate  [c] channels");
             WriteLine(ConsoleColor.Gray, "             [a] restart stream  [f] firewall  [q] quit");
-            WriteLine(ConsoleColor.DarkGray, "  Ctrl+C also quits. --help for command-line options.");
+            WriteLine(ConsoleColor.Gray, "             stop and quit release the module: it stops streaming here and");
+            WriteLine(ConsoleColor.Gray, "             broadcasts again, so any app can connect to it");
+            WriteLine(ConsoleColor.DarkGray, "  Ctrl+C and closing this window quit too. --help for command-line options.");
 
             var engine = new JoystickEngine { Port = port, ActivationIP = opt.TxIp };
             engine.SetRequest(opt.IntervalUs, opt.Channels);
@@ -87,6 +92,10 @@ namespace ELRSWifiJoystick
 
             var quit = new ManualResetEventSlim();
             Console.CancelKeyPress += (s, e) => { e.Cancel = true; quit.Set(); };
+            // Closing the console window ends the process as soon as its handler returns (SIGHUP here), so the
+            // handler releases the module itself, like q (R14). So does a shutdown that Windows tells us of (SIGTERM).
+            using var onClose = OnConsoleEnd(PosixSignal.SIGHUP, engine, quit);
+            using var onShutdown = OnConsoleEnd(PosixSignal.SIGTERM, engine, quit);
 
             engine.Start();
 
@@ -145,14 +154,48 @@ namespace ELRSWifiJoystick
                 }
             }
 
-            ClearStatusLine();
-            Log("Stopping... (the module keeps broadcasting until powered off)");
-            engine.StopAndWait(700);
+            StopForExit(engine);
             return 0;
         }
 
+        // The exit (q, Ctrl+C, the console window closed): stop, which releases the module (R14: the engine says
+        // what it releases), and wait at most 1.5 s for its answer. Once: the main thread and a console handler may
+        // both come here, and the second waits for the first, so neither ends the process before the release is out.
+        private static void StopForExit(JoystickEngine engine)
+        {
+            lock (exitGate)
+            {
+                if (exited) return;
+                exited = true;
+                ClearStatusLine();
+                Log("Stopping...");
+                engine.StopAndWait(700);
+            }
+        }
+
+        // A console control handler (SIGHUP: CTRL_CLOSE_EVENT, the window closed; SIGTERM: CTRL_SHUTDOWN_EVENT).
+        // Windows ends the process when it returns (about 5 s later at the latest), so it stops here, also while
+        // the main thread waits in a prompt. Null when there is none: q and Ctrl+C still release.
+        private static PosixSignalRegistration? OnConsoleEnd(PosixSignal signal, JoystickEngine engine,
+                                                             ManualResetEventSlim quit)
+        {
+            try
+            {
+                return PosixSignalRegistration.Create(signal, _ =>
+                {
+                    quit.Set();
+                    try { StopForExit(engine); } catch { /* the process ends anyway */ }
+                });
+            }
+            catch (Exception)
+            {
+                return null;
+            }
+        }
+
         // 's' - mirror of the GUI Start/Stop button, including its "stop clears the
-        // forced target" behaviour so the next start is a clean auto-discover.
+        // forced target" behaviour so the next start is a clean auto-discover. Stop releases
+        // the module (R14: the engine logs it).
         private static void ToggleEngine(JoystickEngine engine)
         {
             if (engine.IsRunning)
@@ -358,9 +401,22 @@ it streams restarts its stream. Crossfire ignores both: it always sends 16
 channels at about 90 Hz. CH1-CH8 are the vJoy axes (X Y RX RY RZ Z SL0 SL1),
 CH9-CH16 joystick buttons 1-8 (pressed above 75 %).
 
+ELRS streams to one app until it gets joystick_end, and broadcasts only while
+it does not stream: a module left streaming can't be found by another app. So
+stop and quit release it: every module streaming here (also one the app
+ignores, such as a second module, or the one left when t sets another module
+IP), and one asked to start less than 3 s ago, get joystick_end. A module
+known as Crossfire by its beacon is not sent it (it broadcasts while
+streaming, so other apps find it anyway). With a module IP set, one of unknown
+kind that the app neither asked to start nor followed since its start is left
+alone too: the app hears no other module's broadcasts then, so that one could
+be a Crossfire.
+
 While running (keys on a console, or lines on redirected stdin):
-  s               Start / stop (stdin also: start, stop); stop clears the
-                  module IP, so the next start auto-discovers
+  s               Start / stop (stdin also: start, stop); stop releases the
+                  module (joystick_end: it stops streaming here and broadcasts
+                  again, so any app can connect to it) and clears the module
+                  IP, so the next start auto-discovers
   t [ip]          Set module IP and connect (empty = auto-discover)
   p [port]        Change the UDP port (only while stopped; applying starts)
   r [hz]          Rate to ask for (stdin also: rate <hz>, interval <us>)
@@ -368,7 +424,10 @@ While running (keys on a console, or lines on redirected stdin):
   a               Restart the module's stream with the request (stdin: restart)
   f               Re-check / add the firewall rule
   status          Print the status line (stdin only)
-  q               Quit
+  q               Quit (stdin also: quit, exit; Ctrl+C and closing the
+                  console window too): releases the module like stop,
+                  waiting at most 1.5 s for its answer. A logoff or shutdown
+                  may end the CLI without a release: quit it first.
 
 Requires the vJoy driver (vjoystick.sourceforge.net). Put the ELRS or TBS
 Crossfire/Tracer module on the same WiFi network as this PC, then pick the

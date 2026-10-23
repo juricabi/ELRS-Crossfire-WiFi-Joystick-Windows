@@ -292,14 +292,14 @@ public class EngineLifecycleTests
     [Fact]
     public void RequestChangedWhileStopped_ReachesTheModuleThatKeptStreaming()
     {
-        // Stop sends no joystick_end, so the module keeps streaming (and an ELRS module that streams sends no
-        // beacon): the next session's lock restarts it with the request picked meanwhile.
+        // The module misses the joystick_end of Stop's release (R14), so it keeps streaming (and an ELRS module that
+        // streams sends no beacon): the next session's lock restarts it with the request picked meanwhile.
         const int port = 27414;
         var posts = new List<ActivationPost>();
         var e = new JoystickEngine
         {
             Port = port, SkipVJoyForTest = true, OutputOverride = _ => { },
-            ActivateOverride = p => { lock (posts) posts.Add(p); return true; },
+            ActivateOverride = p => { lock (posts) posts.Add(p); return !Harness.IsRelease(p); },
         };
         e.SetRequest(4000, 8);
         var f8 = Frames.Channels(Enumerable.Repeat(100, 8).ToArray());
@@ -311,10 +311,10 @@ public class EngineLifecycleTests
             Assert.True(WaitFor(() => { Send(port, f8); return e.Source != null; }, 3000));
             e.StopAndWait(2000);
             Assert.True(e.SetRequest(2000, 8));                 // nothing is sent while stopped
-            lock (posts) Assert.DoesNotContain(posts, p => p.Action == JoystickEngine.ActionEnd);
+            lock (posts) Assert.Equal(new[] { Harness.Release("127.0.0.1") }, posts.Where(p => p.Action == JoystickEngine.ActionEnd));
             e.Start();
             Thread.Sleep(250);
-            Assert.True(WaitFor(() => { Send(port, f8); lock (posts) return posts.Any(p => p.Action == JoystickEngine.ActionEnd); }, 3000),
+            Assert.True(WaitFor(() => { Send(port, f8); lock (posts) return posts.Any(p => p.Action == JoystickEngine.ActionEnd && p.Restart); }, 3000),
                         "the module that kept streaming the old request is restarted");
             lock (posts) Assert.Equal(new ActivationPost("127.0.0.1", JoystickEngine.ActionBegin, 2000, 8, true), posts[^1]);
         }
@@ -328,10 +328,11 @@ public class EngineLifecycleTests
     public void RestartCutShortByStop_IsDoneWhenTheModuleLocksAgain()
     {
         // A slow module: the restart for a request change waits behind its activation when Stop drops it. The
-        // module never got it and keeps streaming the old request: the next session's lock must restart it, not
-        // take it for done.
+        // module never got it, misses the release too (R14: the exit's wait runs out before its turn, so it is not
+        // sent), and keeps streaming the old request: the next session's lock must restart it, not take it for done.
         const int port = 27416;
         var posts = new List<ActivationPost>();
+        var log = new List<string>();
         using var hold = new ManualResetEventSlim();
         var e = new JoystickEngine
         {
@@ -341,9 +342,10 @@ public class EngineLifecycleTests
                 int n;
                 lock (posts) { posts.Add(p); n = posts.Count; }
                 if (n == 1) hold.Wait(5000);            // the activation hangs
-                return true;
+                return !Harness.IsRelease(p);
             },
         };
+        e.Log += m => { lock (log) log.Add(m); };
         e.SetRequest(4000, 8);
         var f8 = Frames.Channels(Enumerable.Repeat(100, 8).ToArray());
         e.Start();
@@ -353,13 +355,15 @@ public class EngineLifecycleTests
             Assert.True(WaitFor(() => { Send(port, Frames.Ascii("ELRS")); lock (posts) return posts.Count > 0; }, 3000));
             Assert.True(WaitFor(() => { Send(port, f8); return e.Source != null; }, 3000));
             Assert.True(e.SetRequest(2000, 8));                // queued behind the hanging activation
-            e.StopAndWait(2000);
+            e.StopAndWait(2000);                               // the release waits behind it too: at most 1.5 s
             hold.Set();
             Assert.True(e.WaitForPostsForTest(5000));
-            lock (posts) Assert.DoesNotContain(posts, p => p.Action == JoystickEngine.ActionEnd);
+            lock (posts) Assert.Empty(posts.Where(p => p.Action == JoystickEngine.ActionEnd));
+            lock (log) Assert.Contains("Releasing 127.0.0.1 failed: not sent, the wait ran out before its turn - it may " +
+                                       "stream on until its WiFi or power is cycled", log);
             e.Start();
             Thread.Sleep(250);
-            Assert.True(WaitFor(() => { Send(port, f8); lock (posts) return posts.Any(p => p.Action == JoystickEngine.ActionEnd); }, 3000),
+            Assert.True(WaitFor(() => { Send(port, f8); lock (posts) return posts.Any(p => p.Action == JoystickEngine.ActionEnd && p.Restart); }, 3000),
                         "the module that kept the old request is restarted");
             Assert.True(e.WaitForPostsForTest(5000));
             lock (posts) Assert.Equal(new ActivationPost("127.0.0.1", JoystickEngine.ActionBegin, 2000, 8, true), posts[^1]);
